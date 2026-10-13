@@ -1,9 +1,15 @@
 """
 validate_mapping.py - checks every payor mapping in the master sheet against the claims data.
 
-Question it answers, per mapped payor:
-  "Does the rules list we mapped this payor to fit its PA claims better than
-   any other payor's list in the rules file?"
+Question it answers, per claims payor:
+  "Does the coded list of the rules payor we mapped it to actually separate
+   its PA lines from its non-PA lines?"
+
+v2 changes:
+  - fixed duplicate rows (mapping had one row per LINE_OF_BUSINESS -> lines were counted several times)
+  - payors whose rules code has no coded CPT list -> NO_CODED_LIST (was wrongly "does not fit")
+  - status now judged on the payor's OWN list (lift + coverage). "best_code" is kept for
+    information only: big lists from other states win that ranking simply by being big.
 
 Needs in the notebook: path, s3 (claims parquet), rules_df, exploded_rules_v2.
 Run AFTER run_mapping.py in the same kernel (it uses `pairs`), or it runs it for you:
@@ -16,7 +22,8 @@ import re
 import pandas as pd
 
 MIN_TRUE_LINES = 20          # fewer PA lines than this -> NOT_TESTABLE
-NEAR_BEST = 0.90             # mapped code within 90% of the best score -> CONFIRMED
+FIT_LIFT, FIT_COV = 5, 0.25  # FITS: own list >=5x more common on PA lines and covers >=25% of them
+WEAK_LIFT = 2                # WEAK_FIT: lift between 2 and 5
 # Lines that ride along on a PA claim but never need PA themselves.
 # Excluded from scoring so they don't blur the comparison.
 COMPANION = r"^(99[2-4]\d\d|\d{4}F|36415|96[3-5]\d\d|Q996[5-7]|A957[5-9]|G2211)$"
@@ -25,7 +32,7 @@ COMPANION = r"^(99[2-4]\d\d|\d{4}F|36415|96[3-5]\d\d|Q996[5-7]|A957[5-9]|G2211)$
 if "pairs" not in globals():
     print("`pairs` not found - running run_mapping.py first ...")
     exec(open("run_mapping.py").read())
-mapping = pairs[["PAYOR", "PLAN", "rules_payor"]].copy()
+mapping = pairs[["PAYOR", "PLAN", "rules_payor"]].drop_duplicates(["PAYOR", "PLAN"]).copy()
 codes = set(rules_df["PAYOR_CODE"].dropna().astype(str).str.strip())
 mapping = mapping[mapping["rules_payor"].isin(codes)]
 
@@ -47,6 +54,7 @@ r = (exploded_rules_v2[["PAYOR_CODE", "cpt_code"]].dropna().astype(str)
      .drop_duplicates())
 r["cpt_code"] = r["cpt_code"].str.strip().str.upper()
 own = set(zip(r["PAYOR_CODE"], r["cpt_code"]))
+list_size = r.groupby("PAYOR_CODE").size()
 
 # claim-level: does the PA claim have at least one line on its own payor's list?
 c["on_own"] = [(p, x) in own for p, x in zip(c["rules_payor"], c["cpt"])]
@@ -69,48 +77,51 @@ for (payor, code), g in scored.groupby(["PAYOR", "rules_payor"]):
            "pa_claims_with_listed_line": round(
                all_lines[all_lines["CSN"].isin(tc["CSN"])].groupby("CSN")["on_own"].any().mean(), 3)
                if len(tc) else None}
+    row["own_list_size"] = int(list_size.get(code, 0))
+    if row["own_list_size"] == 0:
+        row["status"] = "NO_CODED_LIST"
+        rows.append(row)
+        continue
     if t.sum() < MIN_TRUE_LINES or f.sum() == 0:
         row["status"] = "NOT_TESTABLE"
         rows.append(row)
         continue
     cov_t = r["cpt_code"].map(t).fillna(0).groupby(r["PAYOR_CODE"]).sum() / t.sum()
     cov_f = r["cpt_code"].map(f).fillna(0).groupby(r["PAYOR_CODE"]).sum() / f.sum()
-    # score = PA coverage minus non-PA coverage (Youden's J):
-    # tiny lists score low (little coverage), huge lists score low (flag everything)
     score = (cov_t - cov_f).sort_values(ascending=False)
-    own_score = score.get(code, 0.0)
     best = score.index[0]
-    row.update({"own_pa_cov": round(cov_t.get(code, 0), 3),
+    pa_cov = cov_t.get(code, 0)
+    lift = pa_cov / max(cov_f.get(code, 0), 1 / f.sum())   # floor = one non-PA line
+    row.update({"own_pa_cov": round(pa_cov, 3),
                 "own_nonpa_cov": round(cov_f.get(code, 0), 4),
-                "own_lift": round(cov_t.get(code, 0) / max(cov_f.get(code, 0), 1 / f.sum()), 1),  # floor = one non-PA line
-                "own_score": round(own_score, 3),
-                "own_rank_of_139": int(list(score.index).index(code) + 1) if code in score.index else None,
-                "best_code": best,
-                "best_score": round(score.iloc[0], 3),
-                "runner_up": score.index[1] if score.index[0] == code else best})
-    if own_score <= 0:
-        row["status"] = f"REVIEW - list does not fit (best: {best})"
-    elif best == code or own_score >= NEAR_BEST * score.iloc[0]:
-        row["status"] = "CONFIRMED"
+                "own_lift": round(lift, 1),
+                "info_best_code": best,
+                "info_best_list_size": int(list_size.get(best, 0)),
+                "info_own_rank": int(list(score.index).index(code) + 1)})
+    if lift >= FIT_LIFT and pa_cov >= FIT_COV:
+        row["status"] = "FITS"
+    elif lift >= WEAK_LIFT:
+        row["status"] = "WEAK_FIT"
     else:
-        row["status"] = f"REVIEW - {best} fits better"
+        row["status"] = "DOES_NOT_FIT"
     rows.append(row)
 
 res = pd.DataFrame(rows).sort_values("claim_lines", ascending=False)
 
 # --------------------------------------------------------------- 5) summary
-vol = res.groupby(res["status"].str.split(" - ").str[0])["claim_lines"].sum()
+vol = res.groupby("status")["claim_lines"].sum()
 print("\nClaim lines by status:")
 print((vol / vol.sum() * 100).round(1).astype(str).add("%").to_string())
-cols = ["claims_PAYOR", "rules_payor", "claim_lines", "pa_lines", "own_pa_cov", "own_lift",
-        "own_rank_of_139", "best_code", "pa_claims_with_listed_line", "status"]
+cols = ["claims_PAYOR", "rules_payor", "claim_lines", "pa_lines", "own_list_size", "own_pa_cov",
+        "own_lift", "pa_claims_with_listed_line", "status"]
 print("\nTop 25 mapped payors by volume:")
 print(res[[k for k in cols if k in res.columns]].head(25).to_string(index=False))
 
 with pd.ExcelWriter("mapping_validation.xlsx") as w:
     res.to_excel(w, sheet_name="by_payor", index=False)
-    pd.DataFrame({"setting": ["MIN_TRUE_LINES", "NEAR_BEST", "COMPANION codes excluded", "score"],
-                  "value": [MIN_TRUE_LINES, NEAR_BEST, COMPANION,
-                            "PA-line coverage minus non-PA-line coverage (Youden J), ranked over all rules payors"]}
+    pd.DataFrame({"setting": ["MIN_TRUE_LINES", "FITS", "WEAK_FIT", "COMPANION codes excluded", "info_best_code"],
+                  "value": [MIN_TRUE_LINES, f"lift >= {FIT_LIFT} and PA coverage >= {FIT_COV}",
+                            f"lift >= {WEAK_LIFT}", COMPANION,
+                            "information only - rules payor whose list scores highest (PA cov minus non-PA cov); favours large lists"]}
                  ).to_excel(w, sheet_name="method", index=False)
 print("\nWrote mapping_validation.xlsx")
