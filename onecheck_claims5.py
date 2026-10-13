@@ -9,3 +9,5 @@ cms = set(exploded_rules_v2.loc[exploded_rules_v2.PAYOR_CODE == "CMSHSP", "cpt_c
 found = [c for c in cms_opd if c in cms]
 print(f"CMS OPD codes on CMSHSP list: {len(found)} of {len(cms_opd)}")
 print("Missing:", [c for c in cms_opd if c not in cms])
+https://www.cms.gov/data-research/monitoring-programs/medicare-fee-service-compliance-programs/prior-authorization-pre-claim-review-initiatives/prior-authorization-certain-hospital-outpatient-department-opd-services
+https://www.cms.gov/files/document/opd-services-require-prior-authorization.pdf
