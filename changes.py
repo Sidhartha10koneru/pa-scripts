@@ -1,4 +1,1 @@
-z = pd.read_parquet(path, columns=["PAYOR","PLAN","PAT_ZIP"], filesystem=s3)
-z = z[z.PAYOR.astype(str).str.startswith("ANTHEM")]
-z["zip3"] = z.PAT_ZIP.astype(str).str[:3]
-z.groupby("PLAN", observed=True).zip3.agg(lambda s: s.value_counts().head(3).to_dict())
+print(rules_df.loc[rules_df.PAYOR_NAME.str.contains("New York|Molina|HealthPlus|Oscar|MetroPlus|Braven|Medicaid", case=False, na=False), ["PAYOR_CODE","PAYOR_NAME"]].drop_duplicates().to_string())
