@@ -1,10 +1,9 @@
-b = pd.read_parquet(path, columns=["CSN","PAYOR","PLAN","FINAL_CPT","GROUP_LABEL"], filesystem=s3)
-b = b[b.PAYOR.astype(str).str.contains("AARP")]
-b["cpt"] = b.FINAL_CPT.astype(str).str.strip().str.upper()
-uhc = set(r.loc[r.PAYOR_CODE == "UHC", "cpt_code"])
-b["on_list"] = b.cpt.isin(uhc)
-tr = b[b.GROUP_LABEL.astype(str) == "TRUE"]
-print("TRUE lines on UHC list:", round(tr.on_list.mean() * 100, 1), "%")
-print("TRUE claims with at least one listed line:", round(b[b.CSN.isin(tr.CSN)].groupby("CSN").on_list.any().mean() * 100, 1), "%")
-print("TRUE lines that are Category II (…F) codes:", round(tr.cpt.str.endswith("F").mean() * 100, 1), "%")
-print(tr.groupby(tr.PLAN.astype(str).str.contains("OPTUM CARE")).on_list.mean().round(3))
+d = pd.read_parquet(path, columns=["CSN","FINAL_CPT","GROUP_LABEL"], filesystem=s3)
+d["cpt"] = d.FINAL_CPT.astype(str).str.strip().str.upper()
+d["on_any"] = d.cpt.isin(set(r.cpt_code))
+tr = d[d.GROUP_LABEL.astype(str) == "TRUE"]
+print("TRUE lines on any rules list:", round(tr.on_any.mean() * 100, 1), "%")
+print("TRUE claims with at least one listed line:", round(d[d.CSN.isin(tr.CSN)].groupby("CSN").on_any.any().mean() * 100, 1), "%")
+print("TRUE lines that are Category II (…F):", round(tr.cpt.str.endswith("F").mean() * 100, 1), "%")
+print("TRUE lines that are office visits (99202–99499):", round(tr.cpt.str.match(r"^99[2-4]\d\d$").mean() * 100, 1), "%")
+print(tr.cpt.value_counts().head(20))
