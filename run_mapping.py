@@ -51,7 +51,7 @@ KEYWORDS = [
     # specific brands before their parent company
     (r"MERITAIN",                          "MERITN"),     # Aetna-owned admin; must come before AETNA
     (r"OXFORD",                            "OXFORD"),
-    (r"\bAARP\b",                          "AARP"),
+    (r"\bAARP\b",                          "UHC"),        # AARP plans are insured by UHC; UHC list fits AARP PA claims best (lift 8.8)
     (r"BCBS OF OREGON|REGENCE",            "ORRBCS"),
     (r"HORIZON NJ HEALTH",                 "NJENHD"),
     (r"HORIZON",                           "NJBCBS"),
@@ -85,6 +85,7 @@ KEYWORDS = [
 # ---------------------------------------------------------------------------
 OVERRIDES = [
     (r"SUPPLEMENT|MEDIGAP",                "SUPPLEMENT_NO_PA"),  # pays after Medicare, no PA
+    (r"OPTUM CARE NETWORK",                "DELEGATED"),         # delegated medical group: its own auth rules
     (r"BLUE ?CARD|AHN ANTHEM",             "BLUECARD"),          # out-of-area Blue member: home plan rules apply
     (r"FEDERAL",                           "FEP"),               # Federal Employee Program: national rules
     (r"UNITED ?HEALTH ?CARE MEDICAID|UNITED ?HEALTH ?CARE COMMUNITY PLAN", "UHCNY"),  # UHC Community Plan NY Medicaid
@@ -94,7 +95,7 @@ OVERRIDES = [
 
 # 1) check every code really exists in the rules file
 codes = set(rules_df["PAYOR_CODE"].dropna().astype(str).str.strip())
-SPECIAL = {"NOT_IN_RULES", "SUPPLEMENT_NO_PA", "BLUECARD", "FEP"}
+SPECIAL = {"NOT_IN_RULES", "SUPPLEMENT_NO_PA", "BLUECARD", "FEP", "DELEGATED"}
 bad = sorted({c for _, c in KEYWORDS + OVERRIDES if c not in SPECIAL and c not in codes})
 if bad:
     print("WARNING - these codes are not in rules_df, fix them in KEYWORDS:", bad)
