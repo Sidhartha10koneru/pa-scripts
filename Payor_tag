@@ -1,0 +1,242 @@
+"""
+payor_tagging.py - map claims PAYOR/PLAN names to rules payors using keyword rules.
+
+HOW TO USE (in JupyterLab, after df_cols (claims) and rules_df (rules) are loaded):
+
+    %run -i payor_tagging.py
+
+    # 1) Token sheet: which words matter, auto token_type, rules-payor candidates
+    tok = make_token_sheet(df_cols, rules=rules_df)        # -> token_review.xlsx
+    #    In Excel: fix token_type (ORG/LOB/STATE/NOISE) and fill maps_to_rules_payor
+    #    for ORG rows (pick from the 'rules_payors' sheet). Save.
+
+    # 1b) Optional re-run: NOISE tokens you marked are added to the stop list
+    tok = make_token_sheet(df_cols, rules=rules_df, review="token_review.xlsx",
+                           out="token_review_v2.xlsx")
+
+    # 2) Keyword sheet built from your reviewed tokens + known phrase traps
+    make_keyword_sheet("token_review.xlsx")                 # -> keywords.xlsx
+    #    In Excel: fill 'tag' for the phrase rows, adjust priority (1 = checked first). Save.
+
+    # 3) Apply, measure coverage, export review sheets
+    pairs = apply_keywords(df_cols, "keywords.xlsx")       # -> payor_mapping_review.xlsx
+    #    Look at 'unmatched' (top volume first), add keywords, re-run step 3.
+"""
+import re
+import collections
+import pandas as pd
+
+# ---------------------------------------------------------------- vocab
+STOP = {"HEALTH", "PLAN", "PLANS", "CARE", "OF", "THE", "INC", "CO", "AND", "BLUE",
+        "CROSS", "SHIELD", "BCBS", "INSURANCE", "COMPANY", "NETWORK", "HMO", "PPO",
+        "POS", "EPO", "NTWK", "LLC", "CORP", "GROUP", "SERVICES"}
+
+LOB_WORDS = {"MEDICARE", "PART", "MEDICAID", "COMMERCIAL", "ADVANTAGE", "REPLACEMENT",
+             "SUPPLEMENT", "SUPPLEMENTAL", "SENIOR", "HEALTHPLUS", "BLUECARD", "FEDERAL",
+             "MEDIGAP", "SNP", "MARKETPLACE", "EXCHANGE", "CHAMPUS", "MEDADVANTAGE"}
+STATE_WORDS = {"NEW", "YORK", "JERSEY", "OREGON", "CALIFORNIA", "COLORADO", "ARIZONA",
+               "WASHINGTON", "ALASKA", "OHIO", "INDIANA", "KENTUCKY", "TEXAS", "FLORIDA",
+               "NY", "NJ", "OR", "CA", "AZ", "WA", "FL", "TX", "IN", "OH", "KY"}
+NOISE_WORDS = {"AS", "OPEN", "ACCESS", "CHOICE", "DIRECT", "COMMUNITY", "COMPLETE",
+               "LOCAL", "NYCE", "BENEFITS", "SELECT", "PREFERRED", "PLUS", "NEW",
+               "US", "NATIONAL", "SOLUTIONS", "ADMINISTRATORS", "FUND", "TRUST"}
+
+# Known traps: single words that collide. Fill 'tag' for these in keywords.xlsx.
+PHRASE_HINTS = [
+    (r"UNITED ?HEALTH ?CARE", "use instead of UNITED (collides with union funds)"),
+    (r"\bEMPIRE PLAN\b", "NYSHIP - NOT Empire BCBS"),
+    (r"INLAND EMPIRE", "California plan - NOT Empire BCBS"),
+    (r"EMPIRE (BCBS|BLUE)", "now Anthem/Elevance"),
+    (r"BCBS OF OREGON|REGENCE", "Regence"),
+    (r"BCBS OF (CO|COLORADO)", "Anthem BCBS Colorado"),
+    (r"FREEDOM HEALTH", "Freedom Health MA - not Oxford Freedom"),
+    (r"OXFORD", "UHC Oxford - own PA list"),
+    (r"HEALTHPLUS", "Anthem Medicaid NY"),
+    (r"COMMUNITY PLAN", "UHC Community Plan (Medicaid)"),
+    (r"\bUMR\b", "UHC TPA - self-funded, check"),
+    (r"EVICORE", "delegated vendor - vendor list applies"),
+    (r"OPTUM CARE NETWORK", "delegated group"),
+    (r"LIBERTY MUTUAL", "third-party liability - not health PA"),
+]
+
+# Order matters: first match wins
+LOB_PATTERNS = [
+    (r"SUPPLEMENT|MEDIGAP", "SUPPLEMENT"),
+    (r"PART A AND B|PART B\b|^MEDICARE\s*\|\s*MEDICARE", "MEDICARE_TRAD"),
+    (r"MEDICARE|MEDADVANTAGE|\bSNP\b|C-SNP|D-SNP", "MEDICARE_ADV"),
+    (r"MEDICAID|CAID\b|HEALTHPLUS|COMMUNITY PLAN|\bHARP\b", "MEDICAID"),
+    (r"CHP PLUS|\bCHIP\b", "CHIP"),
+    (r"TRICARE|CHAMPUS", "TRICARE"),
+    (r"SELF.?PAY", "SELF_PAY"),
+    (r"WORKER|COMP\b|LIBERTY MUTUAL|\bTPL\b", "OTHER_LIABILITY"),
+    (r"COMMERCIAL|\bPPO\b|\bEPO\b|\bHMO\b|\bPOS\b", "COMMERCIAL"),
+]
+LOB_FROM_COLUMN = {"Commercial": "COMMERCIAL", "Medicare Replacement": "MEDICARE_ADV",
+                   "Medicare": "MEDICARE_TRAD", "Medicaid Replacement": "MEDICAID",
+                   "Medicaid": "MEDICAID", "Tricare": "TRICARE", "Self-Pay": "SELF_PAY",
+                   "Worker's Comp": "OTHER_LIABILITY", "TPL": "OTHER_LIABILITY",
+                   "Qualified Health Plan": "COMMERCIAL"}
+
+STATE_NAMES = {"NEW YORK": "NY", "NEW JERSEY": "NJ", "OREGON": "OR", "COLORADO": "CO",
+               "CALIFORNIA": "CA", "ARIZONA": "AZ", "WASHINGTON": "WA", "INDIANA": "IN",
+               "KENTUCKY": "KY", "OHIO": "OH", "FLORIDA": "FL", "TEXAS": "TX",
+               "NEVADA": "NV", "UTAH": "UT", "IDAHO": "ID", "ALASKA": "AK"}
+STATE_CODES = set(STATE_NAMES.values())
+
+
+# ---------------------------------------------------------------- helpers
+def toks(s, stop=STOP):
+    return [t for t in re.findall(r"[A-Z0-9]+", str(s).upper())
+            if t not in stop and len(t) > 1]
+
+
+def token_type(t):
+    if t == "1199":
+        return "ORG?"
+    if t.isdigit():
+        return "NOISE"          # dates / group numbers (2026, 01, 740800)
+    if t in LOB_WORDS:
+        return "LOB"
+    if t in STATE_WORDS:
+        return "STATE"
+    if t in NOISE_WORDS:
+        return "NOISE"
+    return "ORG?"               # confirm by hand: ORG or NOISE
+
+
+def first_match(text, patterns):
+    for pat, tag in patterns:
+        if re.search(pat, text):
+            return tag
+    return None
+
+
+def find_state(text):
+    for name, code in STATE_NAMES.items():
+        if name in text:
+            return code
+    m = re.search(r"(?:\bOF |- |\s)([A-Z]{2})\s*$", text)      # trailing ' CO', ' - NY'
+    if m and m.group(1) in STATE_CODES:
+        return m.group(1)
+    return None
+
+
+def _pairs(claims, payor_col, plan_col, lob_col=None):
+    keys = [payor_col, plan_col] + ([lob_col] if lob_col and lob_col in claims.columns else [])
+    p = claims.groupby(keys, observed=True, dropna=False).size().reset_index(name="n")
+    for c in keys:
+        p[c] = p[c].astype(str)
+    return p.sort_values("n", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- step 1
+def make_token_sheet(claims, rules=None, payor_col="PAYOR", plan_col="PLAN",
+                     top=300, review=None, out="token_review.xlsx"):
+    stop = set(STOP)
+    if review:                                        # add NOISE tokens you marked
+        rev = pd.read_excel(review, sheet_name="tokens")
+        stop |= set(rev.loc[rev["token_type"].astype(str).str.upper() == "NOISE", "token"].astype(str))
+
+    pairs = _pairs(claims, payor_col, plan_col)
+    cnt, ex = collections.Counter(), collections.defaultdict(list)
+    for payor, plan, n in pairs[[payor_col, plan_col, "n"]].itertuples(index=False):
+        for t in set(toks(payor, stop)):                # ORG tokens from PAYOR only
+            cnt[t] += n
+            if len(ex[t]) < 3:
+                ex[t].append(f"{payor} | {plan}")
+
+    total = pairs["n"].sum()
+    tok = pd.DataFrame([(t, c, round(100 * c / total, 2), "; ".join(ex[t]))
+                        for t, c in cnt.most_common(top)],
+                       columns=["token", "rows", "pct_rows", "examples"])
+    tok["token_type"] = tok["token"].map(token_type)
+    tok["maps_to_rules_payor"] = ""
+
+    sheets = {"tokens": tok}
+    if rules is not None:
+        rp = (rules[["PAYOR_CODE", "PAYOR_NAME"]].dropna().astype(str)
+              .drop_duplicates().sort_values("PAYOR_NAME"))
+        names_up = list(zip(rp["PAYOR_CODE"], rp["PAYOR_NAME"], rp["PAYOR_NAME"].str.upper()))
+
+        def suggest(t):
+            hits = [f"{code} | {name}" for code, name, up in names_up
+                    if re.search(rf"\b{re.escape(t)}\b", up)]
+            return "; ".join(hits[:5])
+        tok["rules_payor_candidates"] = tok["token"].map(suggest)
+        sheets["rules_payors"] = rp
+
+    with pd.ExcelWriter(out) as w:
+        for name, df in sheets.items():
+            df.to_excel(w, sheet_name=name, index=False)
+    print(f"Wrote {out}: {len(tok)} tokens | {tok['token_type'].value_counts().to_dict()}")
+    return tok
+
+
+# ---------------------------------------------------------------- step 2
+def make_keyword_sheet(review="token_review.xlsx", out="keywords.xlsx"):
+    rev = pd.read_excel(review, sheet_name="tokens")
+    rev["maps_to_rules_payor"] = rev["maps_to_rules_payor"].fillna("").astype(str).str.strip()
+    org = rev[(rev["token_type"].astype(str).str.upper() == "ORG") & (rev["maps_to_rules_payor"] != "")]
+
+    rows = [{"pattern": p, "tag": "", "priority": 1, "note": note} for p, note in PHRASE_HINTS]
+    rows += [{"pattern": rf"\b{re.escape(str(t))}\b", "tag": tag, "priority": 3,
+              "note": f"from token ({rows_} rows)"}
+             for t, tag, rows_ in org[["token", "maps_to_rules_payor", "rows"]].itertuples(index=False)]
+    kw = pd.DataFrame(rows)
+    kw.to_excel(out, index=False)
+    print(f"Wrote {out}: {len(PHRASE_HINTS)} phrase rows (fill 'tag') + {len(org)} token rows")
+    return kw
+
+
+# ---------------------------------------------------------------- step 3
+def apply_keywords(claims, keywords="keywords.xlsx", payor_col="PAYOR", plan_col="PLAN",
+                   lob_col="LINE_OF_BUSINESS", out="payor_mapping_review.xlsx", seed=42):
+    kw = pd.read_excel(keywords)
+    kw["tag"] = kw["tag"].fillna("").astype(str).str.strip()
+    kw = kw[kw["tag"] != ""].sort_values("priority")
+    compiled = [(re.compile(p, re.I), tag, p) for p, tag in zip(kw["pattern"], kw["tag"])]
+
+    def match(text):
+        for rx, tag, p in compiled:
+            if rx.search(text):
+                return tag, p
+        return None, None
+
+    pairs = _pairs(claims, payor_col, plan_col, lob_col)
+    payor_u = pairs[payor_col].str.upper()
+    both_u = payor_u + " | " + pairs[plan_col].str.upper()
+
+    res_payor = payor_u.map(match)                     # PAYOR first, then PLAN as fallback
+    res_both = both_u.map(match)
+    pairs["rules_payor"] = [a[0] or b[0] for a, b in zip(res_payor, res_both)]
+    pairs["matched_pattern"] = [a[1] or b[1] for a, b in zip(res_payor, res_both)]
+    pairs["matched_on"] = ["PAYOR" if a[0] else ("PLAN" if b[0] else None)
+                           for a, b in zip(res_payor, res_both)]
+
+    pairs["lob"] = both_u.map(lambda t: first_match(t, LOB_PATTERNS))
+    if lob_col in pairs.columns:
+        pairs["lob"] = pairs["lob"].fillna(pairs[lob_col].map(LOB_FROM_COLUMN))
+    pairs["state"] = both_u.map(find_state)
+    pairs["is_bluecard"] = both_u.str.contains(r"BLUE ?CARD", regex=True)
+    pairs["is_delegated"] = both_u.str.contains(r"EVICORE|OPTUM CARE NETWORK", regex=True)
+
+    total = pairs["n"].sum()
+    mapped = pairs["rules_payor"].notna()
+    print(f"Pairs: {len(pairs):,} | mapped: {mapped.sum():,}")
+    print(f"Claim volume mapped: {pairs.loc[mapped, 'n'].sum() / total:.1%}")
+    print(f"LOB tagged: {pairs.loc[pairs['lob'].notna(), 'n'].sum() / total:.1%} | "
+          f"state tagged: {pairs.loc[pairs['state'].notna(), 'n'].sum() / total:.1%}")
+
+    unmatched = pairs[~mapped].head(50)
+    print("\nTop unmatched by volume:")
+    print(unmatched[[payor_col, plan_col, "n"]].head(25).to_string(index=False))
+
+    m = pairs[mapped]
+    spot = m.sample(min(30, len(m)), weights="n", random_state=seed) if len(m) else m
+
+    with pd.ExcelWriter(out) as w:
+        pairs.to_excel(w, sheet_name="mapping", index=False)
+        unmatched.to_excel(w, sheet_name="unmatched_top50", index=False)
+        spot.to_excel(w, sheet_name="spot_check", index=False)
+    print(f"\nWrote {out} (sheets: mapping, unmatched_top50, spot_check)")
+    return pairs
