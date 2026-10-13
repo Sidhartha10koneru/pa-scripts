@@ -29,8 +29,18 @@ KEYWORDS = [
     (r"EMPIRE PLAN",                       "NOT_IN_RULES"),   # NY state employees, not Empire BCBS
     (r"INLAND EMPIRE",                     "IEHP"),
     (r"\bUMR\b",                           "NOT_IN_RULES"),   # UHC admin for employer plans - review later
-    (r"GLOBE LIFE|BANKERS|NORTHWELL|CULINARY|TRANSAMERICA", "NOT_IN_RULES"),
+    (r"GLOBE LIFE|BANKERS|NORTHWELL|CULINARY|TRANSAMERICA|TRILLIUM", "NOT_IN_RULES"),
+    # Medigap / supplement plans pay after Medicare and don't run PA
+    (r"SUPPLEMENT|MEDIGAP",                "SUPPLEMENT_NO_PA"),
+    # state Medicaid and state-named Blues
+    (r"MEDICAID - COLORADO",               "COCAID"),
+    (r"BLUE SHIELD OF CALIFORNIA",         "CABS"),
+    (r"BLUE CROSS OF CALIFORNIA",          "CABCBS"),
+    (r"BCBS OF ARIZONA",                   "AZBCBS"),
+    (r"BCBS OF NM|BCBS NM|TURQUOISE",      "NMBCBS"),
+    (r"TRICARE WEST",                      "TRICRW"),
     # specific brands before their parent company
+    (r"MERITAIN",                          "MERITN"),     # Aetna-owned admin; must come before AETNA
     (r"OXFORD",                            "OXFORD"),
     (r"\bAARP\b",                          "AARP"),
     (r"BCBS OF OREGON|REGENCE",            "ORRBCS"),
@@ -54,7 +64,6 @@ KEYWORDS = [
     (r"HUMANA",                            "HUMANU"),
     (r"PROVIDENCE",                        "PROVHP"),
     (r"\bMODA\b",                          "MDAHLT"),
-    (r"MERITAIN",                          "MERITN"),
     (r"PRESBYTERIAN",                      "PRESBY"),
     (r"CHAMPVA",                           "VETHAC"),
     (r"MUTUAL OF OMAHA",                   "MUTOMH"),
@@ -62,7 +71,8 @@ KEYWORDS = [
 
 # 1) check every code really exists in the rules file
 codes = set(rules_df["PAYOR_CODE"].dropna().astype(str).str.strip())
-bad = sorted({c for _, c in KEYWORDS if c != "NOT_IN_RULES" and c not in codes})
+SPECIAL = {"NOT_IN_RULES", "SUPPLEMENT_NO_PA"}
+bad = sorted({c for _, c in KEYWORDS if c not in SPECIAL and c not in codes})
 if bad:
     print("WARNING - these codes are not in rules_df, fix them in KEYWORDS:", bad)
 else:
@@ -72,6 +82,12 @@ else:
 pd.DataFrame([{"pattern": p, "tag": c, "priority": i, "note": ""}
               for i, (p, c) in enumerate(KEYWORDS)]).to_excel("keywords.xlsx", index=False)
 pairs = apply_keywords(df_cols, "keywords.xlsx")
+
+# supplement plans: the word is often in PLAN while PAYOR says "UNITED HEALTHCARE",
+# so override whatever the payor matched
+sup = pairs["lob"].eq("SUPPLEMENT")
+pairs.loc[sup, "rules_payor"] = "SUPPLEMENT_NO_PA"
+print(f"Supplement rows set aside: {pairs.loc[sup, 'n'].sum():,} claims")
 
 # 3) master sheet for review: biggest names first, with a column for your corrections
 master = pairs.copy()
