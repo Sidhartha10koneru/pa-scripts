@@ -74,7 +74,9 @@ for payor, pat, target in PLAN_RULES:
 codes = set(coded_plans)                    # payors that have at least one coded plan
 all_codes = set(rules_df["PAYOR_CODE"].dropna().astype(str).str.strip())
 pairs["rules_plan"] = ""
-pairs.loc[pairs["rules_payor"].isin(all_codes), "rules_plan"] = "ALL"
+# coded list only: a rules payor with no CODED_LIST plan gets no list at all
+pairs.loc[pairs["rules_payor"].isin(all_codes), "rules_plan"] = "NO_CODED_PLAN"
+pairs.loc[pairs["rules_payor"].isin(codes), "rules_plan"] = "ALL"
 both = (pairs["PAYOR"].astype(str) + " | " + pairs["PLAN"].astype(str)).str.upper()
 for payor in dict.fromkeys(p for p, _, _ in resolved):
     todo = pairs["rules_payor"].eq(payor)
@@ -84,6 +86,15 @@ for payor in dict.fromkeys(p for p, _, _ in resolved):
         hit = todo & both.str.contains(pat, regex=True, na=False)
         pairs.loc[hit, "rules_plan"] = plan
         todo &= ~hit
+
+# headline: which claims get a coded list (rules decide) vs not (model decides)
+dd = pairs            # n is split by line of business, so sum all rows (no de-duplication here)
+seg = pd.Series("NOT_A_RULES_PAYOR", index=dd.index)
+seg[dd["rules_plan"].eq("NO_CODED_PLAN")] = "RULES_PAYOR_NO_CODED_LIST"
+seg[dd["rules_plan"].ne("NO_CODED_PLAN") & dd["rules_plan"].ne("")] = "CODED_LIST"
+tot = dd.groupby(seg)["n"].sum()
+print("\nClaims by segment:")
+print(pd.DataFrame({"claims": tot, "share": (tot / tot.sum()).round(3)}).to_string())
 
 # summary for the four payors
 show = pairs[pairs["rules_payor"].isin({p for p, _, _ in PLAN_RULES})]
