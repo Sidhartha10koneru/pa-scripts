@@ -88,7 +88,8 @@ OVERRIDES = [
     (r"OPTUM CARE NETWORK",                "DELEGATED"),         # delegated medical group: its own auth rules
     (r"BLUE ?CARD|AHN ANTHEM",             "BLUECARD"),          # out-of-area Blue member: home plan rules apply
     (r"FEDERAL",                           "FEP"),               # Federal Employee Program: national rules
-    (r"UNITED ?HEALTH ?CARE MEDICAID|UNITED ?HEALTH ?CARE COMMUNITY PLAN", "UHCNY"),  # UHC Community Plan NY Medicaid
+    (r"UNITED ?HEALTH ?CARE MEDICA(?:ID)?\b|\bUHC MEDICAID|UNITED ?HEALTH ?CARE COMMUNITY PLAN", "UHCNY"),  # UHC NY Medicaid (MEDICA\b = truncated name, not MEDICARE)
+    (r"PRESBYTERIAN",                      "PRESBY"),            # Presbyterian Turquoise is Presbyterian's plan, not BCBS NM
     (r"BCBS MED ADV DUAL|BCBS MEDICARE PPO|CENTENNIAL BCBS|BC/BS UNM|TURQUOISE", "NMBCBS"),  # NM ZIPs
     (r"ANTHEM.*MEDI(?:CARE|BLUE)",         "MEDADV"),            # Anthem Medicare Advantage
 ]
