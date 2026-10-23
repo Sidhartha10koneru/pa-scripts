@@ -43,7 +43,10 @@ CPT, MOD, POS = "CPT", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE"
 PAYOR_ID, PLAN_ID = "BUCKET_PAYOR_ID", "BUCKET_PLAN_ID"
 PAYOR_NAME, PLAN_NAME = "PAYOR", "PLAN"          # names used in the master sheet
 SEGMENT = "SEGMENT"                               # filled from --segments file if given
-BASE_FEATS = [CPT, MOD, POS, PAYOR_ID, PLAN_ID]
+# BUCKET_PAYOR_ID / BUCKET_PLAN_ID are NOT payor/plan keys (one ID holds hundreds of payor names),
+# so the payor/plan features are the NAMES, cleaned (see clean_names).
+PAYOR_F, PLAN_F = "PAYOR_CLEAN", "PAYOR_PLAN_CLEAN"
+BASE_FEATS = [CPT, MOD, POS, PAYOR_F, PLAN_F]
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
@@ -81,6 +84,16 @@ def prep(d, sample):
         keep = d[CSN].drop_duplicates().sample(frac=sample, random_state=42)
         d = d[d[CSN].isin(keep)]
     d["y"] = d.y.astype(int)
+    return clean_names(d)
+
+
+def clean_names(d):
+    """Upper-case, squeeze spaces, drop date suffixes like 'AS OF 01/01/2026' so renames stay one plan."""
+    def c(s):
+        s = s.astype(str).str.upper().str.replace(r"\bAS OF\b.*$", "", regex=True)
+        return s.str.replace(r"\s+", " ", regex=True).str.strip()
+    d[PAYOR_F] = c(d[PAYOR_NAME])
+    d[PLAN_F] = d[PAYOR_F] + " | " + c(d[PLAN_NAME])
     return d
 
 
@@ -215,20 +228,21 @@ def demo():
     """Synthetic claims: PA depends on CPT x payor, plus a hidden 'rule' signal only the new feature sees."""
     rng = np.random.default_rng(0)
     n_enc = 60000
-    enc = pd.DataFrame({CSN: np.arange(n_enc), PAYOR_ID: rng.integers(0, 30, n_enc).astype(str),
-                        PLAN_ID: rng.integers(0, 80, n_enc).astype(str), POS: rng.choice(["11", "22", "19"], n_enc),
+    enc = pd.DataFrame({CSN: np.arange(n_enc), PAYOR_NAME: rng.integers(0, 30, n_enc).astype(str),
+                        PLAN_NAME: rng.integers(0, 80, n_enc).astype(str), POS: rng.choice(["11", "22", "19"], n_enc),
                         "YEAR": rng.choice([2024, 2025, 2026], n_enc, p=[.4, .35, .25]),
                         SEGMENT: rng.choice(["Commercial", "Medicaid", "MA"], n_enc)})
     d = enc.loc[enc.index.repeat(rng.integers(1, 5, n_enc))].reset_index(drop=True)
     d[CPT] = rng.integers(0, 400, len(d)).astype(str)
     d[MOD] = rng.choice(["", "26", "TC", "59"], len(d))
     listed = rng.random((30, 400)) < 0.15                               # payor rule lists
-    d["RULE_PLAN_SHARE"] = listed[d[PAYOR_ID].astype(int), d[CPT].astype(int)].astype(float)
+    d["RULE_PLAN_SHARE"] = listed[d[PAYOR_NAME].astype(int), d[CPT].astype(int)].astype(float)
     cpt_eff = rng.normal(-3.5, 1, 400)
     z = cpt_eff[d[CPT].astype(int)] + 2.5 * d.RULE_PLAN_SHARE + (d[POS] == "22") * 0.5
     d["y"] = (rng.random(len(d)) < sigmoid(z)).astype(int)
     d["y"] = d.groupby(CSN).y.transform("max")                         # label per encounter, like ours
-    return d[d.YEAR < 2026], d[d.YEAR == 2026], ["RULE_PLAN_SHARE"]
+    d = clean_names(d)
+    return d[d.YEAR < 2026], d[d.YEAR == 2026].reset_index(drop=True), ["RULE_PLAN_SHARE"]
 
 
 def main():
@@ -238,7 +252,7 @@ def main():
     ap.add_argument("--sample", type=float, default=0.3, help="share of encounters kept (memory)")
     ap.add_argument("--new-feats", nargs="*", default=[])
     ap.add_argument("--rules-master"); ap.add_argument("--rules-parquet")
-    ap.add_argument("--segments", help="optional csv/xlsx with BUCKET_PAYOR_ID, BUCKET_PLAN_ID, segment")
+    ap.add_argument("--segments", help="optional csv/xlsx with PAYOR, PLAN, segment (by NAME, not bucket ids)")
     ap.add_argument("--full", action="store_true", help="also train a full model from scratch")
     ap.add_argument("--rounds", type=int, default=2000)
     ap.add_argument("--out", default="pa_model_v0")
@@ -251,8 +265,8 @@ def main():
 
     import pyarrow.fs as pafs
     fs = pafs.S3FileSystem()
-    cols = list(dict.fromkeys([CSN, LABEL, DATE, FILING] + BASE_FEATS + a.new_feats +
-                              ([PAYOR_NAME, PLAN_NAME] if a.rules_master else [])))
+    raw = [c for c in BASE_FEATS if c not in (PAYOR_F, PLAN_F)] + [PAYOR_NAME, PLAN_NAME]
+    cols = list(dict.fromkeys([CSN, LABEL, DATE, FILING] + raw + a.new_feats))
     print("Loading train", a.train_years)
     train = load(a.train_years, cols, a.sample, fs)
     print("Loading test", a.test_year)
@@ -269,11 +283,9 @@ def main():
     if a.segments:
         s = pd.read_excel(a.segments) if a.segments.endswith("xlsx") else pd.read_csv(a.segments)
         s = s.rename(columns={c: SEGMENT for c in s.columns if c.lower() in ("segment", "final_segment")})
-        s = s[[PAYOR_ID, PLAN_ID, SEGMENT]].astype(str).drop_duplicates([PAYOR_ID, PLAN_ID])
-        for df in (train, test):
-            df[[PAYOR_ID, PLAN_ID]] = df[[PAYOR_ID, PLAN_ID]].astype(str)
-        train = train.merge(s, on=[PAYOR_ID, PLAN_ID], how="left")
-        test = test.merge(s, on=[PAYOR_ID, PLAN_ID], how="left")
+        s = clean_names(s[[PAYOR_NAME, PLAN_NAME, SEGMENT]].copy())[[PLAN_F, SEGMENT]].drop_duplicates(PLAN_F)
+        train = train.merge(s, on=PLAN_F, how="left")
+        test = test.merge(s, on=PLAN_F, how="left")
 
     run(train, test.reset_index(drop=True), new, a.out, a.full, a.rounds)
 
