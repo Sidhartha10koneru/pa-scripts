@@ -20,12 +20,15 @@ Run (SageMaker terminal):
   python pa_base_adapter.py --train-years 2024 2025 --test-year 2026 --sample 0.3 \
       --rules-master <...>/payor_master_review.xlsx --rules-parquet rules_analysis/all_rules.parquet --full
   python pa_base_adapter.py --demo   # synthetic data, checks the mechanics
+  # reuse an existing base, train only a new adapter:
+  python pa_base_adapter.py ... --base-model pa_model_v0_rules/base_model.txt --new-feats Primary_DX --out pa_model_v0_dx
 
 Outputs (--out, default pa_model_v0/): base_model.txt, adapter_model.txt, full_model.txt,
   categories.json, metrics.csv, metrics_by_segment.csv, feature_importance.csv, run_info.json
 """
 import argparse
 import json
+import shutil
 import os
 import time
 
@@ -189,10 +192,23 @@ def sigmoid(z):
 
 
 # ----------------------------------------------------------------- main
-def run(train, test, new_feats, out, full, rounds):
+def run(train, test, new_feats, out, full, rounds, base_model=None):
     os.makedirs(out, exist_ok=True)
     all_feats = BASE_FEATS + new_feats
     cats = fit_categories(train, all_feats)
+    base_src = None
+    if base_model:                                   # reuse a saved base: encode base features exactly as it was trained
+        bdir = os.path.dirname(os.path.abspath(base_model))
+        bcats = json.load(open(f"{bdir}/categories.json"))
+        missing = [c for c in BASE_FEATS if c not in bcats and train[c].dtype.kind not in "biuf"]
+        if missing:
+            raise SystemExit(f"categories.json next to the base model has no entry for {missing}")
+        cats.update({c: bcats[c] for c in BASE_FEATS if c in bcats})
+        base_src = os.path.abspath(base_model)
+        if os.path.exists(f"{bdir}/run_info.json"):
+            bi = json.load(open(f"{bdir}/run_info.json"))
+            print(f"Reusing BASE from {base_src}\n  trained on years {bi.get('train_years')}, "
+                  f"{bi.get('train_lines'):,} lines, {bi.get('base_trees')} trees")
     json.dump(cats, open(f"{out}/categories.json", "w"))
 
     gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)     # validation split by encounter
@@ -201,11 +217,20 @@ def run(train, test, new_feats, out, full, rounds):
     Xtr, Xva, Xte = (apply_categories(x, cats, all_feats) for x in (tr, va, test))
     stop = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(100)]
 
-    # 1) BASE
-    print("\n== training BASE on", BASE_FEATS)
-    base = lgb.train(PARAMS, lgb.Dataset(Xtr[BASE_FEATS], tr.y), rounds,
-                     valid_sets=[lgb.Dataset(Xva[BASE_FEATS], va.y)], callbacks=stop)
-    base.save_model(f"{out}/base_model.txt")
+    # 1) BASE - train it, or load the saved one
+    if base_src:
+        base = lgb.Booster(model_file=base_src)
+        if base.feature_name() != BASE_FEATS:
+            raise SystemExit(f"Base model features {base.feature_name()} differ from BASE_FEATS {BASE_FEATS}")
+        print("\n== BASE loaded (not retrained):", BASE_FEATS)
+        if os.path.abspath(f"{out}/base_model.txt") != base_src:
+            shutil.copy(base_src, f"{out}/base_model.txt")         # identical copy, keeps the folder complete
+    else:
+        print("\n== training BASE on", BASE_FEATS)
+        base = lgb.train(PARAMS, lgb.Dataset(Xtr[BASE_FEATS], tr.y), rounds,
+                         valid_sets=[lgb.Dataset(Xva[BASE_FEATS], va.y)], callbacks=stop)
+        base.save_model(f"{out}/base_model.txt")
+        base_src = os.path.abspath(f"{out}/base_model.txt")
     base_raw = {k: base.predict(X[BASE_FEATS], raw_score=True) for k, X in (("tr", Xtr), ("va", Xva), ("te", Xte))}
 
     # 2) ADAPTER on top of the frozen base score
@@ -228,7 +253,7 @@ def run(train, test, new_feats, out, full, rounds):
         models["full"] = fm
 
     # base really unchanged? reload from disk and compare
-    same = np.allclose(lgb.Booster(model_file=f"{out}/base_model.txt").predict(Xte[BASE_FEATS]), preds["base"])
+    same = np.allclose(lgb.Booster(model_file=base_src).predict(Xte[BASE_FEATS]), preds["base"])
     print(f"\nBase model unchanged after adapter training: {same}")
 
     # metrics overall + per segment
@@ -264,7 +289,8 @@ def run(train, test, new_feats, out, full, rounds):
                      for k, m in models.items()}, axis=1)
     (imp / imp.sum()).round(3).to_csv(f"{out}/feature_importance.csv")
     print("\n== share of gain by feature\n", (imp / imp.sum()).round(3).to_string())
-    json.dump({"base_feats": BASE_FEATS, "new_feats": new_feats, "base_trees": base.num_trees(),
+    json.dump({"base_feats": BASE_FEATS, "new_feats": new_feats, "base_model_source": base_src,
+               "base_reused": bool(base_model), "base_trees": base.num_trees(),
                "adapter_trees": adapter.num_trees(), "train_lines": len(train), "test_lines": len(test),
                "train_years": sorted(map(int, train.YEAR.unique())), "test_years": sorted(map(int, test.YEAR.unique()))},
               open(f"{out}/run_info.json", "w"), indent=1)
@@ -303,12 +329,14 @@ def main():
     ap.add_argument("--full", action="store_true", help="also train a full model from scratch")
     ap.add_argument("--rounds", type=int, default=2000)
     ap.add_argument("--out", default="pa_model_v0")
+    ap.add_argument("--base-model", help="reuse this saved base_model.txt instead of training a new base "
+                                         "(its categories.json must sit in the same folder)")
     ap.add_argument("--demo", action="store_true")
     a = ap.parse_args()
 
     if a.demo:
         train, test, new = demo()
-        return run(train, test, new, a.out + "_demo", True, a.rounds)
+        return run(train, test, new, a.out + "_demo", True, a.rounds, a.base_model)
 
     import pyarrow.fs as pafs
     fs = pafs.S3FileSystem()
@@ -334,7 +362,7 @@ def main():
         train = train.merge(s, on=PLAN_F, how="left")
         test = test.merge(s, on=PLAN_F, how="left")
 
-    run(train, test.reset_index(drop=True), new, a.out, a.full, a.rounds)
+    run(train, test.reset_index(drop=True), new, a.out, a.full, a.rounds, a.base_model)
 
 
 if __name__ == "__main__":
