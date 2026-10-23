@@ -1,8 +1,4 @@
-python -c "
-import pandas as pd; pd.set_option('display.width',250); pd.set_option('display.max_colwidth',60)
-f='plan_candidates.xlsx'; top=['UHC','AETNA','EMHECH','NYMVP','CIGNA']
-p=pd.read_excel(f,'rules_plans_multi'); print(p[p.xref_id.isin(top)].to_string(index=False))
-c=pd.read_excel(f,'multi_plan_candidates')
-cols=['PAYOR','PLAN','claims','rules_payor','claim_segment','cand1_name','cand1_score','cand2_name','cand2_score','confidence']
-for x in top: print('\n=====',x); print(c[c.rules_payor==x][cols].head(15).to_string(index=False))
-"
+print("ID pairs with >1 payor/plan name:", (names_per_id.max(axis=1) > 1).sum(), "of", len(names_per_id))
+ids_per_name = d.groupby(["PAYOR","PLAN"])[["BUCKET_PAYOR_ID","BUCKET_PLAN_ID"]].nunique()
+print("name pairs with >1 ID pair:", (ids_per_name.max(axis=1) > 1).sum(), "of", len(ids_per_name))
+print(d.groupby(["BUCKET_PAYOR_ID","BUCKET_PLAN_ID"]).agg(PAYOR=("PAYOR","first"),PLAN=("PLAN","first"),n=("PLAN","size")).sort_values("n",ascending=False).head(15))
