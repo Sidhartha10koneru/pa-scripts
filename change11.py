@@ -1,1 +1,0 @@
-python pa_base_adapter.py --train-years 2025 --test-year 2026 --sample 0.1 --full --rules-master /home/sagemaker-user/user-default-efs/ksidhar/v3data_eda_analysis/Prd_rules_analysis/payor_master_review.xlsx --rules-parquet rules_analysis/all_rules.parquet --out pa_model_v0_rules 2>&1 | tee run_rules.log
