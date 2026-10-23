@@ -1,9 +1,1 @@
-sed -i 's/CPT, MOD, POS = "CPT",/CPT, MOD, POS = "FINAL_CPT",/' pa_base_adapter1.py
-grep -n 'CPT, MOD, POS' pa_base_adapter1.py
-
-python -c "
-import pyarrow.parquet as pq, pyarrow.fs as f
-names = pq.read_schema('cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v4/ai_prior_auth_09282026_v3_2025_std.parquet', filesystem=f.S3FileSystem()).names
-need = ['CSN','GROUP_LABEL','SERVICEDATE','FILING_ORDER_C','FINAL_CPT','FINAL_MODIFIERS','PLACE_OF_SERVICE_CODE','PAYOR','PLAN','LINE_OF_BUSINESS']
-print('missing:', [c for c in need if c not in names]); print(names)
-"
+python pa_base_adapter.py --train-years 2025 --test-year 2026 --sample 0.1 --full --rules-master /home/sagemaker-user/user-default-efs/ksidhar/v3data_eda_analysis/Prd_rules_analysis/payor_master_review.xlsx --rules-parquet rules_analysis/all_rules.parquet --out pa_model_v0_rules 2>&1 | tee run_rules.log
