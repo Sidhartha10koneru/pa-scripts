@@ -39,7 +39,7 @@ from sklearn.model_selection import GroupShuffleSplit
 BASE_PATH = ("s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v4/"
              "ai_prior_auth_09282026_v3_{year}_std.parquet")
 CSN, LABEL, DATE, FILING = "CSN", "GROUP_LABEL", "SERVICEDATE", "FILING_ORDER_C"
-CPT, MOD, POS = "CPT", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE"
+CPT, MOD, POS = "FINAL_CPT","FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE"
 PAYOR_ID, PLAN_ID = "BUCKET_PAYOR_ID", "BUCKET_PLAN_ID"
 PAYOR_NAME, PLAN_NAME = "PAYOR", "PLAN"          # names used in the master sheet
 SEGMENT = "SEGMENT"                               # filled from --segments file if given
@@ -64,7 +64,10 @@ def load(years, cols, sample, fs=None):
     parts = []
     for y in years:
         t0 = time.time()
-        d = pd.read_parquet(BASE_PATH.format(year=y), columns=cols, filesystem=fs)
+        path = BASE_PATH.format(year=y)
+        if fs is not None:
+            path = path.replace("s3://", "")       # pyarrow S3FileSystem wants bucket/key, no scheme
+        d = pd.read_parquet(path, columns=cols, filesystem=fs)
         d = prep(d, sample)
         d["YEAR"] = y
         parts.append(d)
