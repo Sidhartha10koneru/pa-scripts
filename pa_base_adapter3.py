@@ -152,6 +152,38 @@ def scores(y, p, csn):
             "AUC_enc": roc_auc_score(enc.y, enc.p)}
 
 
+REQ_TARGETS = (0.90, 0.94)          # PRD confidence levels for "PA required"
+NOTREQ_TARGETS = (0.99, 0.995)      # "PA not required": share of cleared items that truly are non-PA
+
+
+def operating_points(y, p, unit, model):
+    """What happens at a cut-off: how much is caught / auto-cleared at a given precision."""
+    y, p = np.asarray(y), np.asarray(p)
+    n, P = len(y), y.sum()
+    rows = []
+    o = np.argsort(-p)                                   # high scores first
+    tp = np.cumsum(y[o]); k = np.arange(1, n + 1); prec = tp / k
+    for t in REQ_TARGETS:
+        ok = np.where(prec >= t)[0]
+        if len(ok):
+            i = ok.max()
+            rows.append({"unit": unit, "model": model, "direction": "PA required", "target": t,
+                         "threshold": p[o][i], "share_flagged": (i + 1) / n,
+                         "PA_caught (recall)": tp[i] / P, "achieved": prec[i]})
+        else:
+            rows.append({"unit": unit, "model": model, "direction": "PA required", "target": t})
+    o = np.argsort(p)                                    # low scores first
+    neg = np.cumsum(1 - y[o]); npv = neg / k
+    for t in NOTREQ_TARGETS:
+        ok = np.where(npv >= t)[0]
+        if len(ok):
+            i = ok.max()
+            rows.append({"unit": unit, "model": model, "direction": "PA not required", "target": t,
+                         "threshold": p[o][i], "share_auto_cleared": (i + 1) / n,
+                         "PA_wrongly_cleared": (i + 1 - neg[i]) / P, "achieved": npv[i]})
+    return rows
+
+
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
 
@@ -203,6 +235,18 @@ def run(train, test, new_feats, out, full, rounds):
     met = pd.DataFrame({k: scores(test.y.values, p, test[CSN].values) for k, p in preds.items()}).T
     met.to_csv(f"{out}/metrics.csv")
     print("\n== TEST metrics (", sorted(test.YEAR.unique()), ")\n", met.round(4).to_string())
+
+    ops = []
+    for k, p in preds.items():
+        ops += operating_points(test.y.values, p, "line", k)
+        e = pd.DataFrame({"y": test.y.values, "p": p, "c": test[CSN].values}).groupby("c").max()
+        ops += operating_points(e.y.values, e.p.values, "encounter", k)
+    ops = pd.DataFrame(ops)
+    ops.to_csv(f"{out}/operating_points.csv", index=False)
+    pd.set_option("display.width", 250)
+    print("\n== Operating points (test). PA required: at this precision, share of all PA caught."
+          "\n   PA not required: at this NPV, share of items auto-cleared and share of PA wrongly cleared.\n",
+          ops.round(4).to_string(index=False))
     if SEGMENT in test:
         rows = []
         for seg, g in test.groupby(SEGMENT):
