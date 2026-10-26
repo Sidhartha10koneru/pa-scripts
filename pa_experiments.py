@@ -144,7 +144,18 @@ def evaluate(name, test, p, rows, cal_rows, ops):
 
 
 # ----------------------------------------------------------------- Day 1
-def baselines(train, update, test, out, rules):
+def add_dx(d, extra):
+    """Clean Primary_DX and add DX3 (first 3 characters = ICD-10 category) so rare codes share information."""
+    if "Primary_DX" in extra:
+        dx = d["Primary_DX"].astype(str).str.upper().str.replace(".", "", regex=False).str.strip()
+        d["Primary_DX"] = dx.where(~dx.isin(["", "NAN", "NONE", "NULL"]))
+        d["DX3"] = d["Primary_DX"].str[:3]
+        print(f"  Primary_DX filled on {d.Primary_DX.notna().mean():.1%} of lines; "
+              f"{d.Primary_DX.nunique():,} codes, {d.DX3.nunique():,} 3-char categories")
+    return d
+
+
+def baselines(train, update, test, out, rules, extra=()):
     os.makedirs(f"{out}/models", exist_ok=True)
     full = pd.concat([train, update], ignore_index=True)
     rows, cal_rows, ops, preds = [], [], [], {}
@@ -156,6 +167,9 @@ def baselines(train, update, test, out, rules):
     sets = {"lgb": BASE_FEATS}
     if rules:
         sets["lgb_rules"] = BASE_FEATS + ["RULE_PLAN_SHARE"]
+    if extra:
+        ctx = list(extra) + (["DX3"] if "Primary_DX" in extra else [])
+        sets["lgb_rules_ctx" if rules else "lgb_ctx"] = sets.get("lgb_rules", BASE_FEATS) + ctx
     for sname, feats in sets.items():
         for tag, data in (("frozen", train), ("full", full)):
             name = f"{sname}_{tag}"
@@ -174,7 +188,8 @@ def baselines(train, update, test, out, rules):
     met.to_csv(f"{out}/metrics.csv")
     pd.concat(cal_rows).to_csv(f"{out}/calibration_bins.csv", index=False)
     pd.DataFrame(ops).to_csv(f"{out}/operating_points.csv", index=False)
-    keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else [])
+    keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else []) + \
+        [c for c in ("Primary_DX", "DX3") if c in test]
     test[keep].assign(**{f"p_{k}": v for k, v in preds.items()}).to_parquet(f"{out}/test_preds.parquet", index=False)
 
     pd.set_option("display.width", 250)
@@ -197,6 +212,7 @@ def demo_data():
     rng = np.random.default_rng(1)
     enc_month = pd.Series(rng.integers(1, 13, d[CSN].nunique()), index=d[CSN].unique())
     d[DATE] = pd.to_datetime(dict(year=d.YEAR, month=d[CSN].map(enc_month), day=15))
+    d["Primary_DX"] = "M" + pd.Series(rng.integers(100, 400, len(d))).astype(str).values
     return d
 
 
@@ -215,6 +231,9 @@ def main():
     ap.add_argument("--test-end", default=None)
     ap.add_argument("--sample", type=float, default=0.1)
     ap.add_argument("--rules-master"); ap.add_argument("--rules-parquet")
+    ap.add_argument("--extra-feats", nargs="*", default=[],
+                    help="extra claim columns for an extra model, e.g. Primary_DX QUANTITY SPECIALTY "
+                         "(Primary_DX also adds DX3 = 3-char ICD category)")
     ap.add_argument("--out", default="exp_d1")
     ap.add_argument("--demo", action="store_true")
     a = ap.parse_args()
@@ -227,7 +246,7 @@ def main():
         import pyarrow.fs as pafs
         fs = pafs.S3FileSystem()
         raw = [c for c in BASE_FEATS if c not in (PAYOR_F, PLAN_F)] + [pb.PAYOR_NAME, pb.PLAN_NAME]
-        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw))
+        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw + a.extra_feats))
         print("Loading", a.train_years + a.test_years)
         d = pb.load(sorted(set(a.train_years + a.test_years)), cols, a.sample, fs)
         rules = bool(a.rules_master and a.rules_parquet)
@@ -235,6 +254,7 @@ def main():
             d = pb.add_rules_feature(d, a.rules_master, a.rules_parquet)
 
     os.makedirs(a.out, exist_ok=True)
+    d = add_dx(d, a.extra_feats)
     d = add_dates(d)
     mc = month_counts(d)
     mc.to_csv(f"{a.out}/month_counts.csv")
@@ -259,7 +279,7 @@ def main():
               open(f"{a.out}/split_info.json", "w"), indent=1)
     if min(len(train), len(update), len(test)) == 0:
         raise SystemExit("One window is empty - change --update-start / --test-start.")
-    baselines(train, update, test, a.out, rules)
+    baselines(train, update, test, a.out, rules, a.extra_feats)
 
 
 if __name__ == "__main__":
