@@ -146,7 +146,7 @@ def evaluate(name, test, p, rows, cal_rows, ops):
 # ----------------------------------------------------------------- Day 1
 def add_dx(d, extra):
     """Clean Primary_DX and add DX3 (first 3 characters = ICD-10 category) so rare codes share information."""
-    if "Primary_DX" in extra:
+    if "Primary_DX" in extra or "DX3" in extra:
         dx = d["Primary_DX"].astype(str).str.upper().str.replace(".", "", regex=False).str.strip()
         d["Primary_DX"] = dx.where(~dx.isin(["", "NAN", "NONE", "NULL"]))
         d["DX3"] = d["Primary_DX"].str[:3]
@@ -168,7 +168,7 @@ def baselines(train, update, test, out, rules, extra=()):
     if rules:
         sets["lgb_rules"] = BASE_FEATS + ["RULE_PLAN_SHARE"]
     if extra:
-        ctx = list(extra) + (["DX3"] if "Primary_DX" in extra else [])
+        ctx = list(extra) + (["DX3"] if "Primary_DX" in extra else [])   # "DX3" alone = category only
         sets["lgb_rules_ctx" if rules else "lgb_ctx"] = sets.get("lgb_rules", BASE_FEATS) + ctx
     for sname, feats in sets.items():
         for tag, data in (("frozen", train), ("full", full)):
@@ -189,7 +189,7 @@ def baselines(train, update, test, out, rules, extra=()):
     pd.concat(cal_rows).to_csv(f"{out}/calibration_bins.csv", index=False)
     pd.DataFrame(ops).to_csv(f"{out}/operating_points.csv", index=False)
     keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else []) + \
-        [c for c in ("Primary_DX", "DX3") if c in test]
+        [c for c in ("Primary_DX", "DX3") if c in test.columns]
     test[keep].assign(**{f"p_{k}": v for k, v in preds.items()}).to_parquet(f"{out}/test_preds.parquet", index=False)
 
     pd.set_option("display.width", 250)
@@ -246,7 +246,8 @@ def main():
         import pyarrow.fs as pafs
         fs = pafs.S3FileSystem()
         raw = [c for c in BASE_FEATS if c not in (PAYOR_F, PLAN_F)] + [pb.PAYOR_NAME, pb.PLAN_NAME]
-        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw + a.extra_feats))
+        load_extra = [("Primary_DX" if c == "DX3" else c) for c in a.extra_feats]   # DX3 is derived from Primary_DX
+        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw + load_extra))
         print("Loading", a.train_years + a.test_years)
         d = pb.load(sorted(set(a.train_years + a.test_years)), cols, a.sample, fs)
         rules = bool(a.rules_master and a.rules_parquet)
