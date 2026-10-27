@@ -425,3 +425,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+#python pa_experiments.py cells --sample 0.3 --test-start 2026-05-01 --test-end 2026-08-01 --update-months 3 --rules-master /home/sagemaker-user/user-default-efs/ksidhar/v3data_eda_analysis/Prd_rules_analysis/payor_master_review.xlsx --rules-parquet rules_analysis/all_rules.parquet --out exp_d2_cells 2>&1 | tee run_d2_cells.log
