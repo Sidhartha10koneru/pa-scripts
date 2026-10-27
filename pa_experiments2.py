@@ -205,6 +205,140 @@ def baselines(train, update, test, out, rules, extra=()):
     print(f"\nSaved to {out}/")
 
 
+
+# ----------------------------------------------------------------- Day 2: cell weights (Task 1)
+CELL_KEYS = {"cpt_plan": [CPT, PLAN_F], "prd_cell": [CPT, MOD, POS, PLAN_F]}
+
+
+def logit(x):
+    x = np.clip(np.asarray(x, float), 0.002, 0.998)
+    return np.log(x / (1 - x))
+
+
+def sig(z):
+    return 1 / (1 + np.exp(-np.asarray(z, float)))
+
+
+def cell_key(df, key):
+    return df[key].astype(str).agg("|".join, axis=1)
+
+
+def learn_weights(df, raw, key, k):
+    """Weight per cell = (log-odds of observed rate - log-odds of predicted rate), shrunk by n/(n+k)."""
+    g = pd.DataFrame({"cell": cell_key(df, key).values, "y": df.y.values, "p": sig(raw)}).groupby("cell").agg(
+        n=("y", "size"), obs=("y", "mean"), pred=("p", "mean"))
+    g["weight"] = (logit(g.obs) - logit(g.pred)) * g.n / (g.n + k)
+    return g
+
+
+def apply_weights(df, raw, weights, key):
+    w = cell_key(df, key).map(weights).fillna(0).values
+    return raw + w
+
+
+def flags_per_1000(test, p, recall=0.9):
+    e = pd.DataFrame({"y": test.y.values, "p": p, "c": test[CSN].values}).groupby("c").max().sort_values("p", ascending=False)
+    caught = e.y.cumsum() / e.y.sum()
+    return 1000 * (np.argmax(caught.values >= recall) + 1) / len(e)
+
+
+def summarize(name, test, p, extra=None):
+    s = scores(test.y.values, p, test[CSN].values)
+    c, _ = calibration(pd.DataFrame({"y": test.y.values, "p": p, "c": test[CSN].values}).groupby("c").max().y.values,
+                       pd.DataFrame({"y": test.y.values, "p": p, "c": test[CSN].values}).groupby("c").max().p.values)
+    return {"variant": name, "AP_enc": s["AP_enc"], "AUC_enc": s["AUC_enc"], "AP_line": s["AP_line"],
+            "flags_per_1000_at_90pct_recall": flags_per_1000(test, p), "ECE_enc": c["ECE"],
+            "mean_pred_enc": c["mean_pred"], "actual_rate_enc": c["actual_rate"], **(extra or {})}
+
+
+def cells(train, update, test, out, rules, n_sim=10, seed=7, min_n=(50, 30, 20), low_rate=0.02, high_rate=0.5):
+    os.makedirs(out, exist_ok=True)
+    feats = BASE_FEATS + (["RULE_PLAN_SHARE"] if rules else [])
+    full = pd.concat([train, update], ignore_index=True)
+    print(f"\n== Frozen base (train only) on {feats}")
+    base, cats = train_lgb(train, feats)
+    base.save_model(f"{out}/base_frozen.txt"); json.dump(cats, open(f"{out}/base_frozen_categories.json", "w"))
+    raw = lambda m, c, df: m.predict(apply_categories(df, c, feats), raw_score=True)
+    r_up, r_te = raw(base, cats, update), raw(base, cats, test)
+    print("== Full model (train + update), the target to approach")
+    fm, fcats = train_lgb(full, feats)
+    p_full = sig(raw(fm, fcats, test))
+
+    # ---- 1.3 isolation: weights on 5 cells change only those cells
+    rng = np.random.default_rng(seed)
+    key = CELL_KEYS["cpt_plan"]
+    tk = cell_key(test, key)
+    picks = rng.choice(tk.value_counts().index[:200], 5, replace=False)
+    r_iso = apply_weights(test, r_te, pd.Series(2.0, index=picks), key)
+    inside = tk.isin(picks).values
+    iso = {"cells_edited": 5, "lines_in_cells": int(inside.sum()),
+           "max_change_outside": float(np.abs(sig(r_iso) - sig(r_te))[~inside].max()),
+           "min_change_inside": float(np.abs(sig(r_iso) - sig(r_te))[inside].min())}
+    print("\n== 1.3 Isolation test:", iso, "-> PASS" if iso["max_change_outside"] == 0 and iso["min_change_inside"] > 0 else "-> FAIL")
+    json.dump(iso, open(f"{out}/isolation.json", "w"), indent=1)
+
+    # ---- 1.5 learned weights from the UPDATE window (real data, no retrain)
+    rows = [summarize("frozen (no update)", test, sig(r_te)), summarize("full retrain (target)", test, p_full)]
+    for kname, key in CELL_KEYS.items():
+        for k in (20, 50, 100):
+            w = learn_weights(update, r_up, key, k)
+            w.to_csv(f"{out}/weights_{kname}_k{k}.csv")
+            p = sig(apply_weights(test, r_te, w.weight, key))
+            rows.append(summarize(f"cell weights {kname} k={k}", test, p,
+                                  {"cells_with_weight": int((w.weight.abs() > 1e-9).sum()),
+                                   "share_test_lines_covered": float(cell_key(test, key).isin(w.index).mean())}))
+    real = pd.DataFrame(rows)
+    gap = real.loc[1, "AP_enc"] - real.loc[0, "AP_enc"]
+    real["gap_closed_%"] = 100 * (real.AP_enc - real.loc[0, "AP_enc"]) / gap if gap else np.nan
+    real.to_csv(f"{out}/cells_real_update.csv", index=False)
+    pd.set_option("display.width", 250)
+    print("\n== 1.5 Learned cell weights on REAL update data (test = May-Jul)\n", real.round(4).to_string(index=False))
+
+    # ---- 1.1c / 1.4 simulated changes: we know exactly what changed and when
+    key = CELL_KEYS["cpt_plan"]
+    tr_rate = pd.DataFrame({"cell": cell_key(train, key).values, "y": train.y.values}).groupby("cell").y.agg(["mean", "size"])
+    n_te, n_up = cell_key(test, key).value_counts(), cell_key(update, key).value_counts()
+    ok = tr_rate[(tr_rate["size"] >= min_n[0])].index.intersection(n_te[n_te >= min_n[1]].index).intersection(
+        n_up[n_up >= min_n[2]].index)
+    low = [c for c in ok if tr_rate.loc[c, "mean"] < low_rate]
+    high = [c for c in ok if tr_rate.loc[c, "mean"] > high_rate]
+    new_req = list(rng.choice(low, min(n_sim, len(low)), replace=False)) if low else []
+    no_more = list(rng.choice(high, min(n_sim, len(high)), replace=False)) if high else []
+    print(f"\n== Simulation: {len(new_req)} cells newly REQUIRE PA, {len(no_more)} cells NO LONGER need PA "
+          f"(from the start of UPDATE)")
+    up_s, te_s = update.copy(), test.copy()
+    for df in (up_s, te_s):
+        ck = cell_key(df, key)
+        df.loc[ck.isin(new_req).values, "y"] = 1
+        df.loc[ck.isin(no_more).values, "y"] = 0
+    ck_te = cell_key(te_s, key)
+    changed = ck_te.isin(new_req + no_more).values
+    manual = pd.Series({**{c: 8.0 for c in new_req}, **{c: -8.0 for c in no_more}})     # "force" weights
+    variants = {"frozen (no update)": r_te,
+                "manual cell weights (known change, day 0)": apply_weights(te_s, r_te, manual, key),
+                "learned cell weights k=20 (from update data)": apply_weights(
+                    te_s, r_te, learn_weights(up_s, raw(base, cats, up_s), key, 20).weight, key)}
+    print("   retraining full model on simulated data (comparison) ...")
+    fm_s, fc_s = train_lgb(pd.concat([train, up_s], ignore_index=True), feats)
+    variants["full retrain on simulated data"] = raw(fm_s, fc_s, te_s)
+    srows = []
+    for name, r in variants.items():
+        p = sig(r)
+        ch = te_s.y.values[changed]
+        srows.append(summarize(name, te_s, p, {
+            "changed_lines": int(changed.sum()),
+            "changed_lines_correct_at_0.5": float(((p[changed] >= 0.5) == (ch == 1)).mean()) if changed.any() else np.nan,
+            "newly_required_mean_p": float(p[ck_te.isin(new_req).values].mean()) if new_req else np.nan,
+            "no_longer_required_mean_p": float(p[ck_te.isin(no_more).values].mean()) if no_more else np.nan,
+            "max_change_unchanged_cells": float(np.abs(p - sig(r_te))[~changed].max())}))
+    sim = pd.DataFrame(srows)
+    sim.to_csv(f"{out}/cells_simulation.csv", index=False)
+    pd.DataFrame({"cell": new_req + no_more, "change": ["newly required"] * len(new_req) + ["no longer required"] * len(no_more)}
+                 ).to_csv(f"{out}/simulated_cells.csv", index=False)
+    print("\n== 1.4 Simulated changes (test = May-Jul with the changes applied)\n", sim.round(4).to_string(index=False))
+    print(f"\nSaved to {out}/")
+
+
 # ----------------------------------------------------------------- main
 def demo_data():
     tr, te, _ = pb.demo()
@@ -218,7 +352,7 @@ def demo_data():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["months", "baselines"],
+    ap.add_argument("mode", choices=["months", "baselines", "cells"],
                     help="months = only show lines/PA rate per month (no training); baselines = Day 1 run")
     ap.add_argument("--train-years", nargs="+", type=int, default=[2025])
     ap.add_argument("--test-years", nargs="+", type=int, default=[2026])
@@ -280,7 +414,13 @@ def main():
               open(f"{a.out}/split_info.json", "w"), indent=1)
     if min(len(train), len(update), len(test)) == 0:
         raise SystemExit("One window is empty - change --update-start / --test-start.")
-    baselines(train, update, test, a.out, rules, a.extra_feats)
+    if a.mode == "cells":
+        if a.demo:      # demo cells are tiny and PA is common: loosen the simulation filters
+            cells(train, update, test, a.out, rules, min_n=(3, 2, 1), low_rate=0.15, high_rate=0.5)
+        else:
+            cells(train, update, test, a.out, rules)
+    else:
+        baselines(train, update, test, a.out, rules, a.extra_feats)
 
 
 if __name__ == "__main__":
