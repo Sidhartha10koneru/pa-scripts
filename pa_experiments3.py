@@ -280,7 +280,7 @@ def cells(train, update, test, out, rules, n_sim=10, seed=7, min_n=(50, 30, 20),
     # ---- 1.5 learned weights from the UPDATE window (real data, no retrain)
     rows = [summarize("frozen (no update)", test, sig(r_te)), summarize("full retrain (target)", test, p_full)]
     for kname, key in CELL_KEYS.items():
-        for k in (20, 50, 100):
+        for k in (5, 10, 20, 50, 100):
             w = learn_weights(update, r_up, key, k)
             w.to_csv(f"{out}/weights_{kname}_k{k}.csv")
             p = sig(apply_weights(test, r_te, w.weight, key))
@@ -313,11 +313,16 @@ def cells(train, update, test, out, rules, n_sim=10, seed=7, min_n=(50, 30, 20),
         df.loc[ck.isin(no_more).values, "y"] = 0
     ck_te = cell_key(te_s, key)
     changed = ck_te.isin(new_req + no_more).values
-    manual = pd.Series({**{c: 8.0 for c in new_req}, **{c: -8.0 for c in no_more}})     # "force" weights
+    # known change on day 0: SET the cell's score to a target (weight = logit(target) - current score, per line)
+    r_man = r_te.copy()
+    r_man[ck_te.isin(new_req).values] = logit(0.98)
+    r_man[ck_te.isin(no_more).values] = logit(0.02)
     variants = {"frozen (no update)": r_te,
-                "manual cell weights (known change, day 0)": apply_weights(te_s, r_te, manual, key),
+                "manual cell weights: set to 0.98 / 0.02 (known change, day 0)": r_man,
                 "learned cell weights k=20 (from update data)": apply_weights(
                     te_s, r_te, learn_weights(up_s, raw(base, cats, up_s), key, 20).weight, key)}
+    variants["manual (day 0) + learned k=20"] = np.where(ck_te.isin(new_req + no_more).values, r_man,
+                                                         variants["learned cell weights k=20 (from update data)"])
     print("   retraining full model on simulated data (comparison) ...")
     fm_s, fc_s = train_lgb(pd.concat([train, up_s], ignore_index=True), feats)
     variants["full retrain on simulated data"] = raw(fm_s, fc_s, te_s)
@@ -425,7 +430,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-#python pa_experiments.py cells --sample 0.3 --test-start 2026-05-01 --test-end 2026-08-01 --update-months 3 --rules-master /home/sagemaker-user/user-default-efs/ksidhar/v3data_eda_analysis/Prd_rules_analysis/payor_master_review.xlsx --rules-parquet rules_analysis/all_rules.parquet --out exp_d2_cells 2>&1 | tee run_d2_cells.log
