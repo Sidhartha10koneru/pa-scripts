@@ -1,0 +1,13 @@
+Row counts and PA rates
+Model	Training data	Lines	Visits	PA rate (lines)
+Frozen	Jan 2025 – Jan 2026	1,511,543	592,851	4.15%
+Full	Jan 2025 – Apr 2026	2,025,811	790,983	3.87%
+Rules frozen	same as frozen	1,511,543	592,851	4.15%
+Rules full	same as full	2,025,811	790,983	3.87%
+Test (all models)	May – Jul 2026	582,414	249,526	2.80% (visits: 2.78%, 6,942 PA visits)
+
+Notes:
+
+Within each training set, 10% of visits are held out for validation (early stopping); the other 90% are learned from.
+The full models’ extra data is the update window, Feb–Apr 2026: 514,268 lines, 198,132 visits, PA line rate 3.04%.
+The full PA rate (3.87%) combines both windows: (1,511,543 × 4.15% + 514,268 × 3.04%) ÷ 2,025,811.
