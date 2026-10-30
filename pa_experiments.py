@@ -41,7 +41,8 @@ from pa_base_adapter import (CSN, DATE, CPT, MOD, POS, PAYOR_F, PLAN_F, BASE_FEA
                              fit_categories, apply_categories, scores, operating_points)
 
 LOOKUP_LEVELS = [[CPT], [PAYOR_F, CPT], [PAYOR_F, PLAN_F, CPT], [PAYOR_F, PLAN_F, CPT, MOD, POS]]   # coarse -> fine, each level contains its parent
-LOOKUP_M = 20          # smoothing: a cell needs ~20 cases before its own rate dominates its parent's
+LOOKUP_M = 20
+ID_COLS = []           # extra source ID columns kept in test_preds.parquet (--id-cols)          # smoothing: a cell needs ~20 cases before its own rate dominates its parent's
 
 
 # ----------------------------------------------------------------- split
@@ -256,6 +257,7 @@ def baselines(train, update, test, out, rules, extra=(), only=None):
         pd.concat(cal_rows).to_csv(f"{out}/calibration_bins.csv", index=False)
         pd.DataFrame(ops).to_csv(f"{out}/operating_points.csv", index=False)
         keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else []) + \
+            [c for c in ["SRC_YEAR", "SRC_ROW", pb.FILING, "IS_PRIMARY", pb.DATE] + list(ID_COLS) if c in test.columns] + \
             [c for c in ("Primary_DX", "DX3") if c in test.columns]
         test[keep].assign(**{f"p_{k}": v for k, v in preds.items()}).to_parquet(f"{out}/test_preds.parquet", index=False)
 
@@ -461,6 +463,8 @@ def main():
                     help="train only these, e.g. lgb_full (default: all lookup_* and lgb_* models)")
     ap.add_argument("--include-secondary", action="store_true",
                     help="train also on secondary/tertiary claims (own rows, own payor); TEST stays primary-only")
+    ap.add_argument("--id-cols", nargs="*", default=[],
+                    help="extra ID columns from the v4 file to carry into test_preds.parquet (e.g. a group id)")
     ap.add_argument("--secondary-in-test", action="store_true",
                     help="with --include-secondary: keep secondary claims in TEST too (test set then differs from the base)")
     ap.add_argument("--dedup-first", action="store_true",
@@ -478,7 +482,8 @@ def main():
         fs = pafs.S3FileSystem()
         raw = [c for c in BASE_FEATS if c not in (PAYOR_F, PLAN_F)] + [pb.PAYOR_NAME, pb.PLAN_NAME]
         load_extra = [("Primary_DX" if c == "DX3" else c) for c in a.extra_feats]   # DX3 is derived from Primary_DX
-        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw + load_extra))
+        ID_COLS[:] = a.id_cols
+        cols = list(dict.fromkeys([CSN, pb.LABEL, DATE, pb.FILING] + raw + load_extra + a.id_cols))
         print("Loading", a.train_years + a.test_years)
         d = pb.load(sorted(set(a.train_years + a.test_years)), cols, a.sample, fs)
         rules = bool(a.rules_master and a.rules_parquet)
@@ -531,9 +536,3 @@ if __name__ == "__main__":
     main()
 
 
-# nohup python -u pa_experiments.py baselines --train-years 2025 --test-years 2026 \
-#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
-#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_nofilter_2025 > run_nofilter_2025.log 2>&1 &
-
-
-# python make_report.py exp_base_2025_2026=Benchmark exp_nofilter_2025_primary_test=NoFilter_PrimaryTest exp_nofilter_2025=NoFilter_AllTest --out experiment_filing_order_2025
