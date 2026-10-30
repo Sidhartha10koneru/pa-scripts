@@ -403,3 +403,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# python pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 \
+#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
+#   --sample 1.0 --models lgb_full --out exp_base_2022_2026 2>&1 | tee run_base_2022_2026.log
+
+
+# python pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 \
+#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
+#   --sample 1.0 --models lgb_full --include-secondary --out exp_base_2022_2026_sec 2>&1 | tee run_base_sec.log
