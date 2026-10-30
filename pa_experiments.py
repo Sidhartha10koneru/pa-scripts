@@ -1,7 +1,7 @@
 """
 pa_experiments.py - adaptation experiments for the PA model. Day 1: shared split + baselines.
 
-Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).
+Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics). new
 
 Shared split (by SERVICEDATE):
   TRAIN   2025 + early 2026 (everything before UPDATE)  -> frozen base models
