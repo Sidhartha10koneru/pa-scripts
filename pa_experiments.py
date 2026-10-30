@@ -1,7 +1,7 @@
 """
 pa_experiments.py - adaptation experiments for the PA model. Day 1: shared split + baselines.
 
-Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics). new
+Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics). NEW_second
 
 Shared split (by SERVICEDATE):
   TRAIN   2025 + early 2026 (everything before UPDATE)  -> frozen base models
@@ -115,6 +115,22 @@ def predict_lookup(model, df):
 
 
 # ----------------------------------------------------------------- LightGBM
+def split_stats(df, prefix=""):
+    """train / validation sizes exactly as train_lgb splits them (10% of visits, seed 42)"""
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
+    tr_i, va_i = next(gss.split(df, groups=df[CSN]))
+    out = {}
+    for n, x in (("train", df.iloc[tr_i]), ("val", df.iloc[va_i])):
+        out |= {f"{n}_lines": len(x), f"{n}_visits": int(x[CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()),
+                f"{n}_start": str(x.SVC_DATE.min().date()), f"{n}_end": str(x.SVC_DATE.max().date())}
+    return out
+
+
+def window_stats(x, n):
+    return {f"{n}_lines": len(x), f"{n}_visits": int(x[CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()) if len(x) else None,
+            f"{n}_period": f"{x.SVC_DATE.min():%Y-%m-%d} .. {x.SVC_DATE.max():%Y-%m-%d}" if len(x) else ""}
+
+
 def train_lgb(df, feats, rounds=2000):
     cats = fit_categories(df, feats)
     gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
@@ -222,6 +238,13 @@ def baselines(train, update, test, out, rules, extra=(), only=None):
 
     for name, p in preds.items():
         evaluate(name, test, p, rows, cal_rows, ops)
+
+    # sizes for the experiment sheet: train/validation as split inside training, update and test windows
+    st = {"frozen": split_stats(train), "full": split_stats(full)}
+    counts = {name: {**st["full" if name.endswith("_full") else "frozen"], **window_stats(test, "test"),
+                     "update_lines": 0, "update_visits": 0, "update_pa_rate": None, "update_period": ""}
+              for name in preds}
+    json.dump(counts, open(f"{out}/split_counts.json", "w"), indent=1)
 
     met = pd.DataFrame(rows).set_index("model")
     met.to_csv(f"{out}/metrics.csv")
@@ -423,6 +446,8 @@ def main():
                     help="train only these, e.g. lgb_full (default: all lookup_* and lgb_* models)")
     ap.add_argument("--include-secondary", action="store_true",
                     help="train also on secondary/tertiary claims (own rows, own payor); TEST stays primary-only")
+    ap.add_argument("--secondary-in-test", action="store_true",
+                    help="with --include-secondary: keep secondary claims in TEST too (test set then differs from the base)")
     ap.add_argument("--dedup-first", action="store_true",
                     help="old repeat removal (keep first copy); default keeps a TRUE copy if any copy is TRUE")
     a = ap.parse_args()
@@ -465,12 +490,12 @@ def main():
 
     print("\n== Split")
     train, update, test = split(d, a.update_start, a.test_start, a.test_end)
-    if "IS_PRIMARY" in test:                                   # keep the test set identical to the primary-only base
+    if "IS_PRIMARY" in test and not a.secondary_in_test:       # keep the test set identical to the primary-only base
         test = test[test.IS_PRIMARY == 1].reset_index(drop=True)
         pb.log_step("TEST", "7. test: secondary claims removed (comparability)", test)
     json.dump({"update_start": a.update_start, "test_start": a.test_start, "test_end": a.test_end,
                "sample": a.sample, "rules": rules, "years": sorted(set(a.train_years + a.test_years)),
-               "models": a.models, "dedup_keep_true": pb.DEDUP_KEEP_TRUE, "include_secondary": a.include_secondary,
+               "models": a.models, "dedup_keep_true": pb.DEDUP_KEEP_TRUE, "include_secondary": a.include_secondary, "secondary_in_test": a.secondary_in_test,
                "rows": {"train": len(train), "update": len(update), "test": len(test)}},
               open(f"{a.out}/split_info.json", "w"), indent=1)
     if min(len(train), len(update), len(test)) == 0:
