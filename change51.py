@@ -1,0 +1,1 @@
+python -c "import pandas as pd; r=pd.read_csv('experiment_training_years_recall_targets.csv'); print(r[r.recall_target.isin([0.8,0.9])][['run','level','recall_target','cutoff','flagged_share','Precision','Recall','TP','FP','FN','TN']].round(3).to_string(index=False))"
