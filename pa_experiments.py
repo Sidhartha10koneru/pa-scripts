@@ -1,7 +1,7 @@
 """
 pa_experiments.py - adaptation experiments for the PA model. Day 1: shared split + baselines.
 
-Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).
+Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).NEW_THIRD
 
 Shared split (by SERVICEDATE):
   TRAIN   2025 + early 2026 (everything before UPDATE)  -> frozen base models
@@ -535,4 +535,12 @@ def main():
 if __name__ == "__main__":
     main()
 
+# nohup python -u pa_experiments.py baselines --train-years 2025 --test-years 2026 \
+#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
+#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test \
+#   --id-cols GROUP_GUID --out exp_nofilter_2025_ids > run_nofilter_2025_ids.log 2>&1 &
+
+# import pandas as pd
+# t = pd.read_parquet("exp_nofilter_2025_ids/test_preds.parquet")
+# print(len(t), "test rows |", t.GROUP_GUID.nunique(), "unique GROUP_GUID |", t.GROUP_GUID.isna().sum(), "missing")
 
