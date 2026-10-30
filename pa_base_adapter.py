@@ -2,7 +2,7 @@
 pa_base_adapter.py - PA model v0: frozen BASE model + ADAPTER that adds new feature(s).
 
   BASE     LightGBM on the initial features. Saved and never changed again.
-  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features. NEW_BASE
+  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features.NEW_SECOND
            with adapter:    p = sigmoid(base_raw + adapter_raw)
            without adapter: p = base model alone (identical to before - checked at the end)
   FULL     (optional --full) one model trained from scratch on all features, to compare.
@@ -71,6 +71,7 @@ def load(years, cols, sample, fs=None):
         if fs is not None:
             path = path.replace("s3://", "")       # pyarrow S3FileSystem wants bucket/key, no scheme
         d = pd.read_parquet(path, columns=cols, filesystem=fs)
+        d["SRC_YEAR"], d["SRC_ROW"] = y, np.arange(len(d))      # row number in the source file: maps back to v4
         d = prep(d, sample, y)
         d["YEAR"] = y
         parts.append(d)
