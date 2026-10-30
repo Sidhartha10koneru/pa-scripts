@@ -1,7 +1,7 @@
 """
 pa_experiments.py - adaptation experiments for the PA model. Day 1: shared split + baselines.
 
-Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics). NEW_second
+Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).
 
 Shared split (by SERVICEDATE):
   TRAIN   2025 + early 2026 (everything before UPDATE)  -> frozen base models
@@ -71,6 +71,8 @@ def split(d, update_start, test_start, test_end=None):
     test = d[(d.SVC_DATE >= ts) & (d.SVC_DATE < te)]
     # an encounter must not straddle windows: assign it to the window of its first service date
     first = d.groupby(CSN).SVC_DATE.min()
+    if "IS_PRIMARY" in d:     # window from primary rows, so the primary test set equals the primary-only run
+        first = d[d.IS_PRIMARY == 1].groupby(CSN).SVC_DATE.min().reindex(first.index).fillna(first)
     win = pd.cut(first, [pd.Timestamp.min, us, ts, te], right=False, labels=["train", "update", "test"])
     train, update, test = (x[x[CSN].map(win) == w] for x, w in ((train, "train"), (update, "update"), (test, "test")))
     for n, x in (("TRAIN", train), ("UPDATE", update), ("TEST", test)):
@@ -236,40 +238,53 @@ def baselines(train, update, test, out, rules, extra=(), only=None):
             preds[name] = m.predict(apply_categories(test, cats, feats))
             print(f"   {m.num_trees()} trees, {time.time()-t0:.0f}s")
 
-    for name, p in preds.items():
-        evaluate(name, test, p, rows, cal_rows, ops)
+    def write(test, preds, out):
+        os.makedirs(out, exist_ok=True)
+        rows, cal_rows, ops = [], [], []
+        for name, p in preds.items():
+            evaluate(name, test, p, rows, cal_rows, ops)
 
-    # sizes for the experiment sheet: train/validation as split inside training, update and test windows
-    st = {"frozen": split_stats(train), "full": split_stats(full)}
-    counts = {name: {**st["full" if name.endswith("_full") else "frozen"], **window_stats(test, "test"),
-                     "update_lines": 0, "update_visits": 0, "update_pa_rate": None, "update_period": ""}
-              for name in preds}
-    json.dump(counts, open(f"{out}/split_counts.json", "w"), indent=1)
+        # sizes for the experiment sheet: train/validation as split inside training, update and test windows
+        st = {"frozen": split_stats(train), "full": split_stats(full)}
+        counts = {name: {**st["full" if name.endswith("_full") else "frozen"], **window_stats(test, "test"),
+                         "update_lines": 0, "update_visits": 0, "update_pa_rate": None, "update_period": ""}
+                  for name in preds}
+        json.dump(counts, open(f"{out}/split_counts.json", "w"), indent=1)
 
-    met = pd.DataFrame(rows).set_index("model")
-    met.to_csv(f"{out}/metrics.csv")
-    pd.concat(cal_rows).to_csv(f"{out}/calibration_bins.csv", index=False)
-    pd.DataFrame(ops).to_csv(f"{out}/operating_points.csv", index=False)
-    keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else []) + \
-        [c for c in ("Primary_DX", "DX3") if c in test.columns]
-    test[keep].assign(**{f"p_{k}": v for k, v in preds.items()}).to_parquet(f"{out}/test_preds.parquet", index=False)
+        met = pd.DataFrame(rows).set_index("model")
+        met.to_csv(f"{out}/metrics.csv")
+        pd.concat(cal_rows).to_csv(f"{out}/calibration_bins.csv", index=False)
+        pd.DataFrame(ops).to_csv(f"{out}/operating_points.csv", index=False)
+        keep = [CSN, "SVC_DATE", CPT, MOD, POS, PAYOR_F, PLAN_F, "y"] + (["RULE_PLAN_SHARE"] if rules else []) + \
+            [c for c in ("Primary_DX", "DX3") if c in test.columns]
+        test[keep].assign(**{f"p_{k}": v for k, v in preds.items()}).to_parquet(f"{out}/test_preds.parquet", index=False)
 
-    pd.set_option("display.width", 250)
-    cols = ["AP_svc", "AUC_svc", "PA_services", "services", "AP_enc", "AUC_enc", "AP_line", "AP_lift_line", "brier_enc", "ECE_enc", "mean_pred_enc", "actual_rate_enc"]
-    print("\n== BASELINES on TEST\n", met[cols].round(4).to_string())
-    o = pd.DataFrame(ops)
-    o = o[o.unit == "encounter"]
-    req = o[o.direction == "PA required"].pivot(index="model", columns="target", values="PA_caught (recall)")
-    clr = o[(o.direction == "PA not required") & (o.target == 0.995)].set_index("model")[
-        ["share_auto_cleared", "PA_wrongly_cleared"]]
-    print("\n== Encounter: share of PA caught at 90% / 94% precision\n", req.round(4).to_string())
-    print("\n== Encounter: at 99.5% NPV, share auto-cleared and share of PA wrongly cleared\n", clr.round(4).to_string())
-    r = pd.DataFrame(ops)
-    r = r[r.direction == "recall target"]
-    print("\n== Confusion matrix at 80/90/95% recall (service = CSN+CPT, encounter = CSN)\n",
-          r[["unit", "model", "target", "threshold", "share_flagged", "achieved", "TP", "FP", "FN", "TN", "F1"]]
-          .rename(columns={"achieved": "precision"}).round(4).to_string(index=False))
-    print(f"\nSaved to {out}/")
+        pd.set_option("display.width", 250)
+        cols = ["AP_svc", "AUC_svc", "PA_services", "services", "AP_enc", "AUC_enc", "AP_line", "AP_lift_line", "brier_enc", "ECE_enc", "mean_pred_enc", "actual_rate_enc"]
+        print("\n== BASELINES on TEST\n", met[cols].round(4).to_string())
+        o = pd.DataFrame(ops)
+        o = o[o.unit == "encounter"]
+        req = o[o.direction == "PA required"].pivot(index="model", columns="target", values="PA_caught (recall)")
+        clr = o[(o.direction == "PA not required") & (o.target == 0.995)].set_index("model")[
+            ["share_auto_cleared", "PA_wrongly_cleared"]]
+        print("\n== Encounter: share of PA caught at 90% / 94% precision\n", req.round(4).to_string())
+        print("\n== Encounter: at 99.5% NPV, share auto-cleared and share of PA wrongly cleared\n", clr.round(4).to_string())
+        r = pd.DataFrame(ops)
+        r = r[r.direction == "recall target"]
+        print("\n== Confusion matrix at 80/90/95% recall (service = CSN+CPT, encounter = CSN)\n",
+              r[["unit", "model", "target", "threshold", "share_flagged", "achieved", "TP", "FP", "FN", "TN", "F1"]]
+              .rename(columns={"achieved": "precision"}).round(4).to_string(index=False))
+        print(f"\nSaved to {out}/")
+
+    write(test, preds, out)
+    if "IS_PRIMARY" in test and (test.IS_PRIMARY == 0).any():      # test kept secondary claims: also score primary-only
+        keep = (test.IS_PRIMARY == 1).values
+        info = json.load(open(f"{out}/split_info.json")) if os.path.exists(f"{out}/split_info.json") else {}
+        info |= {"secondary_in_test": False, "note": f"primary-only test, same model as {out}"}
+        os.makedirs(f"{out}_primary_test", exist_ok=True)
+        json.dump(info, open(f"{out}_primary_test/split_info.json", "w"), indent=1)
+        print("\n\n######## SAME MODEL, PRIMARY-ONLY TEST (comparable with the benchmark) ########")
+        write(test[keep].reset_index(drop=True), {k: v[keep] for k, v in preds.items()}, f"{out}_primary_test")
 
 
 
@@ -514,3 +529,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# nohup python -u pa_experiments.py baselines --train-years 2025 --test-years 2026 \
+#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
+#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_nofilter_2025 > run_nofilter_2025.log 2>&1 &
+
+
+# python make_report.py exp_base_2025_2026=Benchmark exp_nofilter_2025_primary_test=NoFilter_PrimaryTest exp_nofilter_2025=NoFilter_AllTest --out experiment_filing_order_2025
