@@ -45,6 +45,22 @@ def at_cut(y, p, cut):
             "F1": 2 * prec * rec / max(prec + rec, 1e-12), "FP": fp, "FN": fn, "TP": tp, "TN": tn}
 
 
+def split_stats(df):
+    """train / validation sizes exactly as train_lgb splits them (10% of visits, seed 42)"""
+    from sklearn.model_selection import GroupShuffleSplit
+    tr_i, va_i = next(GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42).split(df, groups=df[pb.CSN]))
+    out = {}
+    for n, x in (("train", df.iloc[tr_i]), ("val", df.iloc[va_i])):
+        out |= {f"{n}_lines": len(x), f"{n}_visits": int(x[pb.CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()),
+                f"{n}_start": str(x.SVC_DATE.min().date()), f"{n}_end": str(x.SVC_DATE.max().date())}
+    return out
+
+
+def window_stats(x, n):
+    return {f"{n}_lines": len(x), f"{n}_visits": int(x[pb.CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()) if len(x) else None,
+            f"{n}_period": f"{x.SVC_DATE.min():%Y-%m-%d} .. {x.SVC_DATE.max():%Y-%m-%d}" if len(x) else ""}
+
+
 def recount(folder, info):
     """reload data with the run's settings and recompute train/val/test sizes (for runs without split_counts.json)"""
     import pyarrow.fs as pafs
@@ -58,8 +74,10 @@ def recount(folder, info):
     if "IS_PRIMARY" in test:
         test = test[test.IS_PRIMARY == 1]
     full = pd.concat([train, update], ignore_index=True)
-    st = {"frozen": pe.split_stats(train), "full": pe.split_stats(full)}
-    t = pe.window_stats(test, "test")
+    st = {"frozen": split_stats(train), "full": split_stats(full)}
+    t = window_stats(test, "test")
+    json.dump({k: {**v, **t, "update_lines": 0, "update_visits": 0, "update_pa_rate": None, "update_period": ""}
+               for k, v in st.items()}, open(f"{folder}/split_counts_recount.json", "w"), indent=1)
     return {k: {**v, **t, "update_lines": 0, "update_visits": 0, "update_pa_rate": None, "update_period": ""}
             for k, v in st.items()}
 
@@ -80,6 +98,8 @@ def main():
         cpath = f"{folder}/split_counts.json"
         if os.path.exists(cpath):
             counts = json.load(open(cpath))
+        elif os.path.exists(f"{folder}/split_counts_recount.json"):
+            c2, counts = json.load(open(f"{folder}/split_counts_recount.json")), None
         elif a.recount:
             print(f"{folder}: no split_counts.json -> reloading data to recount (takes a few minutes)")
             c2 = recount(folder, info)
