@@ -294,3 +294,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+  python label_audit.py columns --year 2025
+nohup python -u label_audit.py all --year 2025 --auth-col <AUTH_COLUMN> --focus-cpt 99214 70553 \
+  --out label_audit_2025 > run_label_audit_2025.log 2>&1 &
+
