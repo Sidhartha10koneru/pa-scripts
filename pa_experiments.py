@@ -484,6 +484,8 @@ def main():
                     help="train also on secondary/tertiary claims (own rows, own payor); TEST stays primary-only")
     ap.add_argument("--val-start", default=None,
                     help="time-based validation: visits whose first service date >= this date (e.g. 2026-01-01)")
+    ap.add_argument("--es-metric", default=None,
+                    help="early-stopping metric, e.g. average_precision (default LightGBM binary log loss)")
     ap.add_argument("--refit-full", action="store_true",
                     help="after early stopping, retrain on all training data (incl. validation months)")
     ap.add_argument("--id-cols", nargs="*", default=[],
@@ -496,6 +498,8 @@ def main():
     pb.DEDUP_KEEP_TRUE = not a.dedup_first
     global VAL_START, REFIT_FULL
     VAL_START, REFIT_FULL = a.val_start, a.refit_full
+    if a.es_metric:
+        PARAMS["metric"] = a.es_metric
     pb.INCLUDE_SECONDARY = a.include_secondary
 
     if a.demo:
@@ -541,7 +545,7 @@ def main():
     json.dump({"update_start": a.update_start, "test_start": a.test_start, "test_end": a.test_end,
                "sample": a.sample, "rules": rules, "years": sorted(set(a.train_years + a.test_years)),
                "models": a.models, "dedup_keep_true": pb.DEDUP_KEEP_TRUE, "include_secondary": a.include_secondary, "secondary_in_test": a.secondary_in_test,
-               "val_start": a.val_start, "refit_full": a.refit_full,
+               "val_start": a.val_start, "refit_full": a.refit_full, "es_metric": a.es_metric,
                "rows": {"train": len(train), "update": len(update), "test": len(test)}},
               open(f"{a.out}/split_info.json", "w"), indent=1)
     if min(len(train), len(update), len(test)) == 0:
@@ -561,9 +565,10 @@ def main():
 if __name__ == "__main__":
     main()
 
+# nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 \
+#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
+#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test \
+#   --val-start 2026-03-01 --refit-full --es-metric average_precision \
+#   --out exp_timeval_2m_ap_2022 > run_timeval_2m_ap_2022.log 2>&1 &
 
-nohup python -u pa_experiments.py baselines --train-years 2025 --test-years 2026 \
-  --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
-  --sample 1.0 --models lgb_full --include-secondary --secondary-in-test \
-  --val-start 2026-03-01 --refit-full --out exp_timeval_2m > run_timeval_2m.log 2>&1 &
-
+#python make_report.py exp_nofilter_2022=2022_randomval exp_timeval_2m_2022=2022_timeval_logloss exp_timeval_2m_ap_2022=2022_timeval_ap --out experiment_validation
