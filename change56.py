@@ -12,3 +12,11 @@ Columns: GROUP_GUID = line id (joins to v4 std_data), y = label from GROUP_LABEL
 p_lgb_full_2022 = model score of the line, service_score = score of the service.
 Scores are rankings, not calibrated probabilities.
 EOF
+
+
+D=s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/model_outputs/fn_2022/
+for f in fn_2022_top_pa_guid.csv fn_2022_top_guid.csv fn_2022_services.csv fn_2022_service_lines.parquet fn_2022_README.txt; do
+  aws s3 cp exp_nofilter_2022/$f $D$f
+done
+aws s3 ls $D
+
