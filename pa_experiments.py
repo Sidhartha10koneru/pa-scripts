@@ -1,7 +1,7 @@
 """
 pa_experiments.py - adaptation experiments for the PA model. Day 1: shared split + baselines.
 
-Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).NEW_THIRD
+Needs pa_base_adapter.py in the same folder (reuses its loading, cleaning, rules feature and metrics).
 
 Shared split (by SERVICEDATE):
   TRAIN   2025 + early 2026 (everything before UPDATE)  -> frozen base models
@@ -118,11 +118,25 @@ def predict_lookup(model, df):
 
 
 # ----------------------------------------------------------------- LightGBM
-def split_stats(df, prefix=""):
-    """train / validation sizes exactly as train_lgb splits them (10% of visits, seed 42)"""
+VAL_START = None       # --val-start: time-based validation (visits whose first date >= VAL_START)
+REFIT_FULL = False     # --refit-full: after early stopping, retrain on train + validation with the found rounds
+
+
+def val_split(df):
+    """indices of fitting and validation rows: random 10% of visits, or by time if VAL_START is set"""
+    if VAL_START:
+        first = df.groupby(CSN).SVC_DATE.transform("min")
+        va = (first >= pd.Timestamp(VAL_START)).values
+        return np.where(~va)[0], np.where(va)[0]
     gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
-    tr_i, va_i = next(gss.split(df, groups=df[CSN]))
-    out = {}
+    return next(gss.split(df, groups=df[CSN]))
+
+
+def split_stats(df, prefix=""):
+    """train / validation sizes exactly as train_lgb splits them"""
+    tr_i, va_i = val_split(df)
+    out = {"validation": f"time: visits from {VAL_START}" if VAL_START else "random 10% of visits (seed 42)",
+           "refit_full": REFIT_FULL}
     for n, x in (("train", df.iloc[tr_i]), ("val", df.iloc[va_i])):
         out |= {f"{n}_lines": len(x), f"{n}_visits": int(x[CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()),
                 f"{n}_start": str(x.SVC_DATE.min().date()), f"{n}_end": str(x.SVC_DATE.max().date())}
@@ -136,12 +150,17 @@ def window_stats(x, n):
 
 def train_lgb(df, feats, rounds=2000):
     cats = fit_categories(df, feats)
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
-    tr_i, va_i = next(gss.split(df, groups=df[CSN]))
+    tr_i, va_i = val_split(df)
     tr, va = df.iloc[tr_i], df.iloc[va_i]
+    print(f"   fit {len(tr):,} lines ({tr.SVC_DATE.min():%Y-%m-%d}..{tr.SVC_DATE.max():%Y-%m-%d}) | "
+          f"validation {len(va):,} lines ({va.SVC_DATE.min():%Y-%m-%d}..{va.SVC_DATE.max():%Y-%m-%d})")
     stop = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(200)]
     m = lgb.train(PARAMS, lgb.Dataset(apply_categories(tr, cats, feats), tr.y), rounds,
                   valid_sets=[lgb.Dataset(apply_categories(va, cats, feats), va.y)], callbacks=stop)
+    if REFIT_FULL:                       # use the most recent months too, with the number of trees found above
+        n = m.best_iteration or m.num_trees()
+        print(f"   refit on fit + validation ({len(df):,} lines) with {n} trees")
+        m = lgb.train(PARAMS, lgb.Dataset(apply_categories(df, cats, feats), df.y), n)
     return m, cats
 
 
@@ -463,6 +482,10 @@ def main():
                     help="train only these, e.g. lgb_full (default: all lookup_* and lgb_* models)")
     ap.add_argument("--include-secondary", action="store_true",
                     help="train also on secondary/tertiary claims (own rows, own payor); TEST stays primary-only")
+    ap.add_argument("--val-start", default=None,
+                    help="time-based validation: visits whose first service date >= this date (e.g. 2026-01-01)")
+    ap.add_argument("--refit-full", action="store_true",
+                    help="after early stopping, retrain on all training data (incl. validation months)")
     ap.add_argument("--id-cols", nargs="*", default=[],
                     help="extra ID columns from the v4 file to carry into test_preds.parquet (e.g. a group id)")
     ap.add_argument("--secondary-in-test", action="store_true",
@@ -471,6 +494,8 @@ def main():
                     help="old repeat removal (keep first copy); default keeps a TRUE copy if any copy is TRUE")
     a = ap.parse_args()
     pb.DEDUP_KEEP_TRUE = not a.dedup_first
+    global VAL_START, REFIT_FULL
+    VAL_START, REFIT_FULL = a.val_start, a.refit_full
     pb.INCLUDE_SECONDARY = a.include_secondary
 
     if a.demo:
@@ -516,6 +541,7 @@ def main():
     json.dump({"update_start": a.update_start, "test_start": a.test_start, "test_end": a.test_end,
                "sample": a.sample, "rules": rules, "years": sorted(set(a.train_years + a.test_years)),
                "models": a.models, "dedup_keep_true": pb.DEDUP_KEEP_TRUE, "include_secondary": a.include_secondary, "secondary_in_test": a.secondary_in_test,
+               "val_start": a.val_start, "refit_full": a.refit_full,
                "rows": {"train": len(train), "update": len(update), "test": len(test)}},
               open(f"{a.out}/split_info.json", "w"), indent=1)
     if min(len(train), len(update), len(test)) == 0:
@@ -534,13 +560,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# nohup python -u pa_experiments.py baselines --train-years 2025 --test-years 2026 \
-#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
-#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test \
-#   --id-cols GROUP_GUID --out exp_nofilter_2025_ids > run_nofilter_2025_ids.log 2>&1 &
-
-# import pandas as pd
-# t = pd.read_parquet("exp_nofilter_2025_ids/test_preds.parquet")
-# print(len(t), "test rows |", t.GROUP_GUID.nunique(), "unique GROUP_GUID |", t.GROUP_GUID.isna().sum(), "missing")
-
