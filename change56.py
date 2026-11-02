@@ -1,28 +1,40 @@
-import numpy as np, pandas as pd
+import pandas as pd
 
-p = pd.read_parquet("exp_nofilter_2025_ids/test_preds.parquet")
-model = "p_lgb_full"                                   # score column
+path = "exp_nofilter_2022/test_preds_with_guid.parquet"
+model, cut = "p_lgb_full_2022", 0.80          # 2022-2026 model, best_thr at service level
 
-# 1) service level: one row per CSN + CPT (PA if any line is TRUE, score = highest line score)
-s = p.groupby(["CSN", "FINAL_CPT"]).agg(y=("y", "max"), score=(model, "max"))
-# visit level instead: s = p.groupby("CSN").agg(y=("y", "max"), score=(model, "max"))
-y, sc = s.y.values, s.score.values
+t = pd.read_parquet(path)
+t["GROUP_GUID"] = t.GROUP_GUID.astype(str)
 
-# 2) every cut-off 0.05 ... 0.95
-rows = []
-for cut in np.round(np.arange(0.05, 0.96, 0.05), 2):
-    flag = sc >= cut
-    tp = int((flag & (y == 1)).sum()); fp = int((flag & (y == 0)).sum())
-    fn = int((~flag & (y == 1)).sum()); tn = int((~flag & (y == 0)).sum())
-    prec = tp / max(tp + fp, 1); rec = tp / max(tp + fn, 1)
-    f1 = 2 * prec * rec / max(prec + rec, 1e-12)
-    rows.append({"cutoff": cut, "flagged": tp + fp, "precision": prec, "recall": rec, "F1": f1,
-                 "TP": tp, "FP": fp, "FN": fn, "TN": tn, "accuracy": (tp + tn) / len(y)})
-t = pd.DataFrame(rows)
+# 1) service level: PA if any line TRUE, score = highest line score
+s = t.groupby(["CSN", "FINAL_CPT"]).agg(y=("y", "max"), score=(model, "max"),
+                                        n_lines=("GROUP_GUID", "size")).reset_index()
+fn = s[(s.y == 1) & (s.score < cut)]
+print("FN services:", len(fn))                 # expect 18,070
 
-# 3) best_thr = cut-off with the highest F1
-best = t.loc[t.F1.idxmax()]
-pd.set_option("display.width", 200)
-print(t.round(4).to_string(index=False))
-print(f"\nbest_thr = {best.cutoff}  |  precision {best.precision:.4f}  recall {best.recall:.4f}  F1 {best.F1:.4f}  "
-      f"TP {best.TP:,}  FP {best.FP:,}  FN {best.FN:,}  TN {best.TN:,}")
+# 2) all lines (GUIDs) behind those services
+lines = t.merge(fn[["CSN", "FINAL_CPT", "score"]].rename(columns={"score": "service_score"}),
+                on=["CSN", "FINAL_CPT"])
+lines = lines[["GROUP_GUID", "CSN", "FINAL_CPT", "FINAL_MODIFIERS", "SERVICEDATE", "FILING_ORDER_C",
+               "PAYOR_CLEAN", "PAYOR_PLAN_CLEAN", "PLACE_OF_SERVICE_CODE", "y", model, "service_score"]]
+print("lines (GUIDs) in FN services:", len(lines), "| of which TRUE lines:", int(lines.y.sum()))
+
+# 3) one row per FN service with its GUIDs listed
+fn_svc = fn.merge(lines.groupby(["CSN", "FINAL_CPT"]).GROUP_GUID.agg(lambda x: ",".join(x)).rename("GROUP_GUIDS"),
+                  on=["CSN", "FINAL_CPT"])
+
+lines.to_parquet("exp_nofilter_2022/fn_2022_service_lines.parquet", index=False)
+fn_svc.to_csv("exp_nofilter_2022/fn_2022_services.csv", index=False)
+
+# quick view: which CPTs are missed most
+print(fn.FINAL_CPT.value_counts().head(20))
+# lines = the FN service lines from the previous cell
+idx = lines.groupby(["CSN", "FINAL_CPT"])[model].idxmax()
+fn_top = lines.loc[idx].reset_index(drop=True)
+print(len(fn_top))                                  # 18,070: one GUID per FN service
+fn_top.to_csv("exp_nofilter_2022/fn_2022_top_guid.csv", index=False)
+
+
+
+
+
