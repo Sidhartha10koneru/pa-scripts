@@ -1,21 +1,22 @@
-# training cell = all 5 model features
 key = ["FINAL_CPT", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE", "PAYOR_PLAN_CLEAN"]
-tr = d[d.SVC_DATE < "2026-05-01"].copy()
-for c in key:
-    tr[c] = tr[c].astype(str)
-cell = tr.groupby(key).y.agg(train_n="size", train_pa_rate="mean")
-cpt_rate = tr.groupby("FINAL_CPT").y.mean().rename("train_cpt_pa_rate")
+m = fn[fn.bucket.str.startswith("4")]
 
-# test: service = CSN + CPT (unchanged); mod / POS / plan from its highest-scoring line
-t = pd.read_parquet("exp_nofilter_2022/test_preds_with_guid.parquet")
-for c in key:
-    t[c] = t[c].astype(str)
-s = t.groupby(["CSN", "FINAL_CPT"]).agg(y=("y", "max"), score=("p_lgb_full_2022", "max")).reset_index()
-top = t.loc[t.groupby(["CSN", "FINAL_CPT"]).p_lgb_full_2022.idxmax(), ["CSN"] + key]
-s = s.merge(top, on=["CSN", "FINAL_CPT"])
+# 1) mixed cells behind the missed services, biggest first
+cells = (m.groupby(key)
+          .agg(fn_services=("CSN", "size"), train_n=("train_n", "first"),
+               train_pa_rate=("train_pa_rate", "first"), median_score=("score", "median"))
+          .sort_values("fn_services", ascending=False))
 
-cut = 0.421                                            # 80%-recall cut-off of the 2022 model
-fn = s[(s.y == 1) & (s.score < cut)].copy()
-print("FN services:", len(fn))                         # expect ~10,451
-fn = fn.join(cell, on=key).join(cpt_rate, on="FINAL_CPT")
-fn["train_n"] = fn.train_n.fillna(0)
+# 2) how the same cells look in the test set overall (all services, not only FN)
+s_all = s.copy()
+for c in key:
+    s_all[c] = s_all[c].astype(str)
+test_cell = s_all.groupby(key).agg(test_services=("y", "size"), test_pa=("y", "sum"))
+cells = cells.join(test_cell)
+cells["test_pa_rate"] = cells.test_pa / cells.test_services
+cells["cum_share_of_bucket4"] = cells.fn_services.cumsum() / cells.fn_services.sum()
+
+pd.set_option("display.width", 250)
+print(len(cells), "mixed cells behind", len(m), "missed services")
+print(cells.head(30).round(3).to_string())
+cells.to_csv("exp_nofilter_2022/fn_2022_mixed_cells.csv")
