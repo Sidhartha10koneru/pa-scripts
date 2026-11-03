@@ -125,6 +125,9 @@ def history(x, plan_rows, lag_days):
     return x
 
 
+DROP = set()        # --drop-features
+
+
 def separability(x, test_start, min_pa_fit, min_pa_eval):
     import lightgbm as lgb
     from sklearn.metrics import average_precision_score, roc_auc_score
@@ -134,10 +137,10 @@ def separability(x, test_start, min_pa_fit, min_pa_eval):
     if res["fit_pa"] < min_pa_fit or res["eval_pa"] < min_pa_eval or fit.y.nunique() < 2 or ev.y.nunique() < 2:
         return res, None
     hist = [c for c in ["cell_visit_no_ytd", "therapy_visit_no_ytd", "days_since_first_cell_visit", "month",
-                        "prior_pa_lagged", "age_band"] if c in x]
+                        "prior_pa_lagged", "age_band"] if c in x and c not in DROP]
     cols = []
     for c in x.columns:
-        if c in hist or EXCLUDE.search(c):
+        if c in hist or c in DROP or c.upper() in DROP or EXCLUDE.search(c):
             continue
         nu = fit[c].nunique(dropna=True)
         if nu < 2 or nu > 0.5 * len(fit):                 # constant, or ID-like
@@ -149,7 +152,7 @@ def separability(x, test_start, min_pa_fit, min_pa_eval):
         if c in hist and c != "age_band":
             X[c] = pd.to_numeric(x[c], errors="coerce")
         else:
-            v = x[c].astype(object).fillna("NA").astype(str)
+            v = x[c].astype(str).replace({"nan": "NA", "None": "NA", "<NA>": "NA"})
             keep = v[x.SVC < test_start].value_counts()
             keep = set(keep[keep >= 5].index)
             X[c] = pd.Categorical(v.where(v.isin(keep), "OTHER"))
@@ -198,8 +201,11 @@ def main():
     ap.add_argument("--shift-x", type=float, default=2.0)
     ap.add_argument("--inflation-x", type=float, default=2.0)
     ap.add_argument("--out", default="sep_mixed")
+    ap.add_argument("--drop-features", nargs="*", default=[], help="columns to leave out, e.g. FILING_ORDER_C month")
+    ap.add_argument("--primary-only", action="store_true", help="use only FILING_ORDER_C = 1 lines")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    DROP.update(a.drop_features); DROP.update(f.upper() for f in a.drop_features)
     pd.set_option("display.width", 250); pd.set_option("display.max_columns", 40); pd.set_option("display.max_colwidth", 80)
 
     cells = pd.read_csv(a.cells, dtype={k: str for k in KEY})
@@ -218,6 +224,8 @@ def main():
                              "97165", "97166", "97167", "97168", "98940", "98941", "98942", "92507", "92526"]}
     d = load(cpts, plans, a.years, fs_())
     d = d[d.SVC < pd.Timestamp(a.test_end)]
+    if a.primary_only and "FILING_ORDER_C" in d:
+        d = d[pd.to_numeric(d.FILING_ORDER_C, errors="coerce") == 1]
 
     rows = []
     for i, c in sel.iterrows():
@@ -254,4 +262,14 @@ def main():
 if __name__ == "__main__":
     main()
 
-#nohup python -u cell_separability.py --cells exp_nofilter_2022/fn_mixed_cells_recall80.csv --cover 0.5 --out sep_mixed > run_sep_mixed.log 2>&1 &
+
+
+# nohup python -u cell_separability.py --cells exp_nofilter_2022/fn_mixed_cells_recall80.csv --cover 0.5 \
+#   --primary-only --drop-features month --min-pa-eval 20 --out sep_mixed_v2 > run_sep_mixed_v2.log 2>&1 &
+
+# import pandas as pd
+# k = ["FINAL_CPT", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE", "PAYOR_PLAN_CLEAN"]
+# v1 = pd.read_csv("sep_mixed/cells.csv", dtype=str); v2 = pd.read_csv("sep_mixed_v2/cells.csv", dtype=str)
+# m = v1.merge(v2, on=k, suffixes=("_v1", "_v2"))
+# print(pd.crosstab(m.category_v1, m.category_v2, margins=True))
+# print(m[m.category_v2.str.startswith("B")][k + ["fn_services_v1", "AUC_oot_v2", "top_features_v2"]].to_string(index=False))
