@@ -1,29 +1,10 @@
-import re, pandas as pd
-pd.set_option("display.width", 250); pd.set_option("display.max_rows", 1000); pd.set_option("display.max_colwidth", 60)
-
-masked = lambda v: bool(re.fullmatch(r"[xX\-\s,.()]+", v))          # 'xx', 'xxx-xxx-xxxx', 'xx,xx' = de-identified
-L["masked"] = L.value.map(masked)
-
-# 1) one row per field: in which files, how many values, masked or real, example values
-prof = (L.groupby(["segment", "column"])
-          .agg(files=("file", lambda s: ",".join(sorted({f[0] for f in s}))),     # 1/2/3 = which sample file
-               values=("value", "size"),
-               masked_share=("masked", "mean"),
-               examples=("value", lambda s: " | ".join(pd.unique(s[~s.map(masked)])[:4])))
-          .reset_index())
-prof["masked_share"] = prof.masked_share.round(2)
-prof.to_csv("accureg_field_profile.csv", index=False)
-
-# 2) overview per segment
-print(prof.groupby("segment").agg(fields=("column", "size"),
-                                  real_fields=("masked_share", lambda m: int((m < 1).sum()))).to_string())
-
-# 3) the fields we care about first, with real examples
-for s in ["MSH", "EVN", "PV1", "PV2", "IN1", "IN2", "ROL", "DG1"]:
-    print(f"\n===== {s}")
-    print(prof[(prof.segment == s) & (prof.masked_share < 1)][["column", "files", "values", "examples"]].to_string(index=False))
-
-# 4) OBX: what is being observed (identifier + description), not every answer
-o = L[L.segment == "OBX"]
-ids = o[o.column.str.contains(r"-3\.(1|2) /", regex=True)]
-print("\n===== OBX identifiers\n", ids.groupby(["file", "value"]).size().sort_values(ascending=False).head(50).to_string())
+x = tr[(tr.FINAL_CPT == "97112") & (tr.FINAL_MODIFIERS == "GP") & (tr.PLACE_OF_SERVICE_CODE == "11")
+       & (tr.PAYOR_PLAN_CLEAN == "EMBLEM HEALTH / GHI | NYCE PPO PLAN")]
+print(x.groupby(x.SVC_DATE.dt.to_period("M")).y.agg(lines="size", pa="sum", rate="mean"))
+te = t[(t.FINAL_CPT == "97112") & (t.FINAL_MODIFIERS == "GP") & (t.PLACE_OF_SERVICE_CODE == "11")
+       & (t.PAYOR_PLAN_CLEAN == "EMBLEM HEALTH / GHI | NYCE PPO PLAN")].copy()
+te["m"] = pd.to_datetime(te.SERVICEDATE).dt.to_period("M")
+print(te.groupby("m").y.agg(lines="size", pa="sum", rate="mean"))
+# same CPT at this plan, all codes: is it PT-wide (97110, 97140...) or only 97112?
+pt = t[t.FINAL_CPT.str.startswith("971") & (t.PAYOR_PLAN_CLEAN == "EMBLEM HEALTH / GHI | NYCE PPO PLAN")]
+print(pt.groupby("FINAL_CPT").y.agg(lines="size", pa="sum", rate="mean").sort_values("lines", ascending=False).head(8))
