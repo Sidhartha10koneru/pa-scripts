@@ -1,15 +1,23 @@
-x["L1"] = x.LEVEL1_LABEL.astype(str)
-x["L2"] = x.LEVEL2_LABEL.astype(str)
-x["group"] = np.select([~x.pat_has_pa, x.prior_pa == 1], ["patient never PA", "after a PA visit"], "PA patient, before/at PA")
+import re, pandas as pd
 
-# 1) how each FALSE was decided, by group
-f = x[x.y == 0]
-print(pd.crosstab([f.L1, f.L2], f.group, margins=True))
+pat = re.compile(r"^([A-Z][A-Z0-9]{2})(?:#(\d+))?-(\d+)(?:\.(\d+))?\s*/\s*(.*)$")
 
-# 2) the same for TRUE (sanity check: should be L1 genuine auth or L2 PA code)
-print(pd.crosstab([x[x.y == 1].L1, x[x.y == 1].L2], x[x.y == 1].group, margins=True))
+def hl7_long(path):
+    w = pd.read_csv(path, dtype=str, keep_default_na=False)          # all text: no 2.03E+11
+    w["msg"] = w.get("MSH-10 / Message Control ID", pd.Series(range(len(w)))).astype(str)
+    long = w.melt(id_vars="msg", var_name="column", value_name="value")
+    long = long[long.value.str.strip() != ""]
+    parts = long.column.str.extract(pat)
+    parts.columns = ["segment", "repeat", "field", "component", "name"]
+    long = pd.concat([long, parts], axis=1)
+    long["file"] = path
+    return long
 
-# 3) what the raw auth field and CARC actually contain on FALSE lines
-print(f.LEVEL1_RAW_LABEL.astype(str).value_counts().head(10))
-print(f.LINE_AUTHORIZATION_NUMBER.astype(str).str.upper().value_counts().head(15))
-print(f.CARC.astype(str).value_counts().head(15))
+L = pd.concat([hl7_long(f) for f in ["1_flat 1.csv", "2_flat 1.csv", "3_flat 1.csv"]], ignore_index=True)
+pd.set_option("display.width", 200); pd.set_option("display.max_rows", 500)
+
+# 1) which segments each file has, and how many filled fields
+print(L.groupby(["file", "segment"]).size().unstack(0, fill_value=0))
+# 2) readable dump: one line per filled field
+print(L.sort_values(["file", "msg", "segment", "repeat", "field"])[["file", "segment", "repeat", "column", "value"]].to_string(index=False))
+L.to_csv("accureg_samples_long.csv", index=False)
