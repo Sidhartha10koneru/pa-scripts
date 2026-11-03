@@ -70,6 +70,32 @@ def isin(d, col, vals):
     return ds.field(col).isin(sorted(set(vals)))
 
 
+NEED = ["CSN", "PAT_ID", "SERVICEDATE", "FILING_ORDER_C", "PAYOR", "PLAN", "FINAL_CPT", "FINAL_MODIFIERS",
+        "PLACE_OF_SERVICE_CODE", "GROUP_LABEL", "LEVEL1_LABEL", "LEVEL2_LABEL", "LINE_AUTHORIZATION_NUMBER"] + ATTRS
+
+
+def read(d, filt, row_filter=None):
+    """read in batches, keep only the columns we use, filter rows per batch -> low memory"""
+    out = []
+    for b in d.to_batches(filter=filt, batch_size=250_000):
+        t = b.to_pandas()
+        t = t.loc[:, ~t.columns.duplicated()]
+        t = prep(t[[c for c in NEED if c in t]])
+        if row_filter is not None:
+            t = row_filter(t)
+        if len(t):
+            out.append(t)
+    if not out:
+        return pd.DataFrame()
+    t = pd.concat(out, ignore_index=True)
+    for c in ["SPECIALTY", "DEPARTMENT", "DEPARTMENT_ID", "SERVICEPROVIDERNPI", "PCPNPI", "VISITTYPE", "Primary_DX",
+              "PAYOR", "PLAN", "PAYOR_PLAN_CLEAN", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE", "L", "GROUP_LABEL",
+              "LEVEL1_LABEL", "LEVEL2_LABEL"]:
+        if c in t:
+            t[c] = t[c].astype(str).astype("category")
+    return t
+
+
 def prep(t):
     t = pb.clean_names(t.loc[:, ~t.columns.duplicated()])
     for c in KEY:
@@ -99,11 +125,14 @@ def cpt_rates(years, test_start, fs):
             t = t.filter(pc.is_in(lab, pa.array(["TRUE", "1", "FALSE", "0"])))
             g = t.group_by("FINAL_CPT").aggregate([("yy", "sum"), ("yy", "count")]).to_pandas()
         else:                                        # test year: date filter in pandas
-            t = d.to_table(columns=["FINAL_CPT", "GROUP_LABEL", "SERVICEDATE"]).to_pandas()
-            lab = t.GROUP_LABEL.astype(str).str.strip().str.upper()
-            t = t[lab.isin(["TRUE", "1", "FALSE", "0"]) & (pd.to_datetime(t.SERVICEDATE, errors="coerce") < test_start)]
-            t = t.assign(yy=lab[t.index].isin(["TRUE", "1"]).astype(int))
-            g = t.groupby("FINAL_CPT").yy.agg(yy_sum="sum", yy_count="size").reset_index()
+            gs = []
+            for b in d.to_batches(columns=["FINAL_CPT", "GROUP_LABEL", "SERVICEDATE"], batch_size=500_000):
+                t = b.to_pandas()
+                lab = t.GROUP_LABEL.astype(str).str.strip().str.upper()
+                t = t[lab.isin(["TRUE", "1", "FALSE", "0"]) & (pd.to_datetime(t.SERVICEDATE, errors="coerce") < test_start)]
+                t = t.assign(yy=lab[t.index].isin(["TRUE", "1"]).astype(int))
+                gs.append(t.groupby("FINAL_CPT").yy.agg(yy_sum="sum", yy_count="size").reset_index())
+            g = pd.concat(gs)
         out.append(g)
     g = pd.concat(out)
     g["FINAL_CPT"] = g.FINAL_CPT.astype(str).str.strip()
@@ -189,11 +218,17 @@ def main():
     cpts, plans = set(cs.FINAL_CPT), set(cs.PAYOR_PLAN_CLEAN)
     if any(THERAPY.match(c) for c in cpts):
         cpts |= set(THERAPY_CODES)
+    pairs = set(zip(cs.FINAL_CPT, cs.PAYOR_PLAN_CLEAN))
+    ther_plans = {p for c, p in pairs if THERAPY.match(c)}
+
+    def keep_cells(t):                       # only the (CPT, plan) pairs of the FN cells (+ therapy codes of therapy plans)
+        k = pd.Series(list(zip(t.FINAL_CPT, t.PAYOR_PLAN_CLEAN)), index=t.index).isin(pairs)
+        k |= t.FINAL_CPT.isin(THERAPY_CODES) & t.PAYOR_PLAN_CLEAN.isin(ther_plans)
+        return t[k & (t.SVC < te)]
+
     parts = []
     for y in a.years:
-        d = dset(y, fs)
-        t = prep(d.to_table(filter=ds.field("FINAL_CPT").isin(sorted(cpts))).to_pandas())
-        parts.append(t[t.PAYOR_PLAN_CLEAN.isin(plans) & (t.SVC < te)])
+        parts.append(read(dset(y, fs), ds.field("FINAL_CPT").isin(sorted(cpts)), keep_cells))
         print(f"  [V4] cells {y}: {len(parts[-1]):,} lines")
     cell_all = pd.concat(parts, ignore_index=True)
 
@@ -204,7 +239,7 @@ def main():
     for y in a.years:
         d = dset(y, fs)
         if pats and "PAT_ID" in d.schema.names:
-            parts.append(prep(d.to_table(filter=isin(d, "PAT_ID", pats)).to_pandas()))
+            parts.append(read(d, isin(d, "PAT_ID", pats)))
     pat = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
     print(f"  [V4] patients: {len(pats):,} FN patients, {len(pat):,} lines")
 
@@ -342,6 +377,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-#nohup python -u fn_root_cause.py --buckets 4 --out rc_mixed > run_rc_mixed.log 2>&1 &
-#nohup python -u fn_root_cause.py --buckets 1 2 3 4 5 --cover 0.8 --out rc_all > run_rc_all.log 2>&1 &
