@@ -2,7 +2,7 @@
 pa_base_adapter.py - PA model v0: frozen BASE model + ADAPTER that adds new feature(s).
 
   BASE     LightGBM on the initial features. Saved and never changed again.
-  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features. 4thnov
+  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features. 4thnov1
            with adapter:    p = sigmoid(base_raw + adapter_raw)
            without adapter: p = base model alone (identical to before - checked at the end)
   FULL     (optional --full) one model trained from scratch on all features, to compare.
@@ -42,6 +42,9 @@ from sklearn.model_selection import GroupShuffleSplit
 BASE_PATH = ("s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v4/"
              "ai_prior_auth_09282026_v3_{year}_std.parquet")
 CSN, LABEL, DATE, FILING = "CSN", "GROUP_LABEL", "SERVICEDATE", "FILING_ORDER_C"
+# optional overrides, e.g. train on v6:  PA_BASE_PATH=".../std_data_v6/ai_prior_auth_09282026_v3_{year}_std.parquet" PA_LABEL_COL=LABEL_V6
+BASE_PATH = os.environ.get("PA_BASE_PATH", BASE_PATH)
+LABEL = os.environ.get("PA_LABEL_COL", LABEL)
 CPT, MOD, POS = "FINAL_CPT","FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE"
 PAYOR_ID, PLAN_ID = "BUCKET_PAYOR_ID", "BUCKET_PLAN_ID"
 PAYOR_NAME, PLAN_NAME = "PAYOR", "PLAN"          # names used in the master sheet
