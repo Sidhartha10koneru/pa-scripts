@@ -2,7 +2,7 @@
 pa_base_adapter.py - PA model v0: frozen BASE model + ADAPTER that adds new feature(s).
 
   BASE     LightGBM on the initial features. Saved and never changed again.
-  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features.NEW_SECOND
+  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features.
            with adapter:    p = sigmoid(base_raw + adapter_raw)
            without adapter: p = base model alone (identical to before - checked at the end)
   FULL     (optional --full) one model trained from scratch on all features, to compare.
@@ -83,6 +83,9 @@ def load(years, cols, sample, fs=None):
 FUNNEL = []          # removal log: one row per (year, step); filled by prep(), add_dates() and split()
 DEDUP_KEEP_TRUE = True   # repeated lines: keep the TRUE copy if any copy is TRUE (old behaviour: keep first row)
 INCLUDE_SECONDARY = False  # True: keep secondary/tertiary claims as their own rows (their own payor/plan)
+# quality codes (CPT Category II, ^\d{4}F$): keep = current labels | false = label FALSE | exclude = drop the lines
+QUALITY_MODE = os.environ.get("PA_QUALITY_MODE", "keep").strip().lower()
+assert QUALITY_MODE in ("keep", "false", "exclude"), f"PA_QUALITY_MODE must be keep/false/exclude, got {QUALITY_MODE}"
 
 
 def log_step(year, step, d, lines_before=None):
@@ -106,6 +109,14 @@ def prep(d, sample, year=None):
     log_step(year, "0. raw file", raw)
     for v, n in lab.value_counts().items():
         print(f"           label {v:<12} {n:>11,}")
+    if QUALITY_MODE != "keep" and CPT in d:                       # quality codes = CPT Category II (####F)
+        q = d[CPT].astype(str).str.strip().str.upper().str.fullmatch(r"\d{4}F")
+        if QUALITY_MODE == "false":                              # label FALSE whatever the original label
+            d.loc[q, "y"] = 0
+            log_step(year, f"0q. quality codes set FALSE ({int(q.sum()):,} lines)", d.assign(y=d.y.fillna(-1)))
+        elif QUALITY_MODE == "exclude":                          # remove from the data
+            d = d[~q]
+            log_step(year, f"0q. quality codes removed ({int(q.sum()):,} lines)", d.assign(y=d.y.fillna(-1)))
     d = d[d.y.notna()]                                           # drop AMBIGUOUS / missing labels
     log_step(year, "1. AMBIGUOUS/missing label dropped", d)
     if FILING in d:
