@@ -101,3 +101,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#   python build_v6.py --years 2022 2023 2024 2025 2026 --dry-run
+
+#   nohup python -u build_v6.py --years 2022 2023 2024 2025 2026 --out-path "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v6/ai_prior_auth_09282026_v3_{year}_std.parquet" > run_build_v6.log 2>&1 &
+
+#   PA_BASE_PATH="s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v6/ai_prior_auth_09282026_v3_{year}_std.parquet" PA_LABEL_COL=LABEL_V6 nohup python -u pa_experiments.py baselines ...same flags... --out exp_v6_false > run_v6_false.log 2>&1 &
