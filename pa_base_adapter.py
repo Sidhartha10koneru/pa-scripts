@@ -2,7 +2,7 @@
 pa_base_adapter.py - PA model v0: frozen BASE model + ADAPTER that adds new feature(s).
 
   BASE     LightGBM on the initial features. Saved and never changed again.
-  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features.
+  ADAPTER  extra trees trained on top of the base score (init_score), using base + new features. 4thnov
            with adapter:    p = sigmoid(base_raw + adapter_raw)
            without adapter: p = base model alone (identical to before - checked at the end)
   FULL     (optional --full) one model trained from scratch on all features, to compare.
