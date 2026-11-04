@@ -81,6 +81,9 @@ def main():
     ap.add_argument("--min-alone", type=int, default=100, help="labelled 'alone on claim' lines needed to classify a CPT")
     ap.add_argument("--payor-min-alone", type=int, default=50)
     ap.add_argument("--payor-exception-rate", type=float, default=0.05)
+    ap.add_argument("--rate-basis", choices=["labelled", "amb_false"], default="labelled",
+                    help="alone rate on labelled lines only, or with AMBIGUOUS counted as not PA (removes 2025 inflation)")
+    ap.add_argument("--ref-years", nargs="*", type=int, default=[], help="years used for the alone rate (default: all loaded)")
     ap.add_argument("--out", default="v6_impact")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -118,8 +121,14 @@ def main():
     print("\n== Q. quality-code TRUE alone on claim (should be ~0):", int((qt.n_cpt_claim == 1).sum()))
 
     # ------------------------------------------------------------------ alone-on-claim rates (training window only)
-    ref = D[lab & (D.window == "train") & ~D.is_quality].copy()
+    # rate basis: 'labelled' = TRUE / (TRUE+FALSE) (inflated where AMBIGUOUS lines were dropped, mostly 2025)
+    #             'amb_false' = TRUE / all lines incl. AMBIGUOUS (AMBIGUOUS counted as not PA - no drop inflation)
+    base = D[(D.window == "train") & ~D.is_quality]
+    if a.ref_years:
+        base = base[base.YEAR.isin(a.ref_years)]
+    ref = (base if a.rate_basis == "amb_false" else base[base.L.isin(["TRUE", "FALSE"])]).copy()
     ref["y"] = ref.L.eq("TRUE")
+    print(f"\n   alone-rate reference: basis={a.rate_basis}, years={a.ref_years or a.years}, {len(ref):,} lines")
     ref["ctx"] = np.where(ref.n_cpt_claim == 1, "alone", "with")
     r = ref.groupby(["FINAL_CPT", "ctx"], observed=True).y.agg(["sum", "size"]).unstack(fill_value=0)
     r.columns = [f"{s}_{c}" for s, c in r.columns]
@@ -156,20 +165,13 @@ def main():
            .rename("TRUE_lines_flipped").to_frame().join(r[["size_alone", "rate_alone", "size_with", "rate_with"]]))
     print(f"\n== P. top codes flipped at threshold {mid:.0%}\n", top.round(4).to_string())
     print(f"\n   flipped lines by year (threshold {mid:.0%}):\n", flips[mid].groupby("YEAR").size().to_string())
+    watch = ["99211", "99212", "99213", "99214", "99215", "99203", "99204", "99205", "G2211", "36415", "93000", "96372"]
+    print("\n   where the common office-visit / lab codes sit (alone rate vs thresholds):\n",
+          r.loc[r.index.isin(watch), ["size_alone", "rate_alone", "size_with", "rate_with", "shared_auth_TRUE_lines"]]
+          .sort_values("shared_auth_TRUE_lines", ascending=False).round(4).to_string())
 
     # ------------------------------------------------------------------ risks
-    # R1: visits that lose ALL TRUE lines (Q + P at the middle threshold)
-    t_true = D[D.L == "TRUE"]
-    gone = pd.concat([t_true[t_true.is_quality], flips[mid]]).index.unique()
-    v = t_true.assign(flip=t_true.index.isin(gone)).groupby("CSN").flip.agg(["all", "size"])
-    lost = v[v["all"]]
-    print(f"\n== R1. visits whose ALL PA lines would be flipped (visit-level PA -> not PA): {len(lost):,} "
-          f"of {len(v):,} PA visits ({len(lost) / max(len(v), 1):.1%})")
-    lost_cpts = t_true[t_true.CSN.isin(lost.index)].groupby("FINAL_CPT", observed=True).size().sort_values(ascending=False).head(15)
-    print("   CPTs on those visits:\n", lost_cpts.to_string())
-    lost_cpts.to_csv(f"{a.out}/R1_visits_losing_all_PA_cpts.csv")
-
-    # R2: payor exceptions - listed CPT that is often PA alone at a specific payor
+    # R2: payor exceptions - listed CPT that is often PA alone at a specific payor (computed first, used in R1)
     lst_mid = set(r[r.classifiable & (r.rate_alone < mid)].index)
     rp = ref[ref.FINAL_CPT.isin(lst_mid) & (ref.ctx == "alone")].groupby(["FINAL_CPT", "PAYOR_CLEAN"], observed=True).y.agg(["mean", "size"])
     exc = rp[(rp["size"] >= a.payor_min_alone) & (rp["mean"] >= a.payor_exception_rate)].sort_values("size", ascending=False)
@@ -177,6 +179,25 @@ def main():
     exc.to_csv(f"{a.out}/R2_payor_exceptions.csv")
     print(f"\n== R2. payor exceptions (listed CPT, alone-on-claim PA rate >= {a.payor_exception_rate:.0%} at that payor, "
           f">= {a.payor_min_alone} alone lines): {len(exc)}\n", exc.head(20).round(3).to_string())
+    ex_pairs = set(exc.index)
+    fm = flips[mid]
+    keep_flip = ~pd.Series(list(zip(fm.FINAL_CPT.astype(str), fm.PAYOR_CLEAN.astype(str))), index=fm.index).isin(ex_pairs)
+    fm_ex = fm[keep_flip.values]
+    print(f"   flips at {mid:.0%} after excluding exception pairs: {len(fm_ex):,} TRUE lines "
+          f"(was {len(fm):,}); test services {len(fm_ex[fm_ex.window == 'test'][['CSN', 'FINAL_CPT']].drop_duplicates()):,}")
+
+    # R1: visits that lose ALL TRUE lines (Q + P at the middle threshold, exceptions excluded)
+    t_true = D[D.L == "TRUE"]
+    gone = pd.concat([t_true[t_true.is_quality], fm_ex]).index.unique()
+    v = t_true.assign(flip=t_true.index.isin(gone)).groupby("CSN").flip.agg(["all", "size"])
+    lost = v[v["all"]]
+    print(f"\n== R1. visits whose ALL PA lines would be flipped (visit-level PA -> not PA): {len(lost):,} "
+          f"of {len(v):,} PA visits ({len(lost) / max(len(v), 1):.1%})")
+    lost_cpts = t_true[t_true.CSN.isin(lost.index)].groupby("FINAL_CPT", observed=True).size().sort_values(ascending=False).head(15)
+    print("   CPTs on those visits:\n", lost_cpts.to_string())
+    lost_cpts.to_csv(f"{a.out}/R1_visits_losing_all_PA_cpts.csv")
+    lp = t_true[t_true.CSN.isin(lost.index)].groupby("PAYOR_CLEAN", observed=True).CSN.nunique().sort_values(ascending=False).head(10)
+    print("   payors of those visits:\n", lp.to_string())
 
     # R3: codes we cannot classify but that carry many shared-auth TRUE lines
     unc = r[~r.classifiable].sort_values("shared_auth_TRUE_lines", ascending=False)
@@ -202,4 +223,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-#nohup python -u v6_label_impact.py --years 2025 2026 --out v6_impact > run_v6_impact.log 2>&1 &
+#nohup python -u v6_label_impact.py --years 2025 2026 --rate-basis amb_false --out v6_impact_ambf > run_v6_impact_ambf.log 2>&1 &
