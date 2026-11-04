@@ -38,6 +38,12 @@ def metrics(y, s, scope, run):
     y, s = np.asarray(y), np.asarray(s)
     r = {"run": run, "scope": scope, "n": len(y), "PA": int(y.sum()), "AUC_PR": average_precision_score(y, s),
          "AUC_ROC": roc_auc_score(y, s)}
+    # best-F1 cut-off on a 0.05 grid (same as best_thr in the experiment sheet)
+    best = max(((t, f1) for t in np.arange(0.05, 1.0, 0.05)
+                for f1 in [2 * ((s >= t) & (y == 1)).sum() / max((s >= t).sum() + y.sum(), 1)]), key=lambda z: z[1])
+    f = s >= best[0]
+    r |= {"best_thr": round(float(best[0]), 2), "TP@best": int((f & (y == 1)).sum()), "FP@best": int((f & (y == 0)).sum()),
+          "FN@best": int((~f & (y == 1)).sum()), "F1@best": best[1]}
     for rec in (0.80, 0.90):
         cut = np.quantile(s[y == 1], 1 - rec)
         f = s >= cut
@@ -72,7 +78,7 @@ def main():
         print("!! WARNING: the non-quality services differ between runs - check that all runs used the same test window/filters")
     M = pd.DataFrame(rows)
     M.to_csv(f"{a.out}/compare.csv", index=False)
-    cols = ["run", "n", "PA", "AUC_PR", "AUC_ROC", "TP@80", "FP@80", "FN@80", "precision@80", "FP@90", "FN@90", "precision@90"]
+    cols = ["run", "n", "PA", "AUC_PR", "AUC_ROC", "best_thr", "TP@best", "FP@best", "FN@best", "TP@80", "FP@80", "FN@80", "precision@80", "FP@90", "FN@90", "precision@90"]
     for sc, g in M.groupby("scope"):
         print(f"\n== {sc}\n", g[cols].round(4).to_string(index=False))
     print(f"\noutput: {a.out}/compare.csv")
@@ -82,8 +88,12 @@ if __name__ == "__main__":
     main()
 
 
-#nohup python -u quality_code_analysis.py --years 2022 2023 2024 2025 2026 --out qc_analysis > run_qc_analysis.log 2>&1 &
-# PA_QUALITY_MODE=keep    nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_keep    > run_qc_keep.log 2>&1 &
-# PA_QUALITY_MODE=false   nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_false   > run_qc_false.log 2>&1 &
-# PA_QUALITY_MODE=exclude nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_exclude > run_qc_exclude.log 2>&1 &
-#python compare_quality_modes.py exp_qc_keep=keep exp_qc_false=false exp_qc_exclude=exclude --out qc_compare
+# # 1. quality codes excluded (v4 data)
+# PA_QUALITY_MODE=exclude nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_qc_exclude_rv > run_qc_exclude_rv.log 2>&1 &
+
+# # 2. quality codes FALSE (v6 data, LABEL_V6)
+# PA_BASE_PATH="s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v6/ai_prior_auth_09282026_v3_{year}_std.parquet" PA_LABEL_COL=LABEL_V6 nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_qc_false_rv > run_qc_false_rv.log 2>&1 &
+
+
+
+#python compare_quality_modes.py exp_nofilter_2022=keep exp_qc_false_rv=false exp_qc_exclude_rv=exclude --out qc_compare_rv
