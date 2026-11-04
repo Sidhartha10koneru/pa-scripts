@@ -201,3 +201,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#nohup python -u v6_label_impact.py --years 2025 2026 --out v6_impact > run_v6_impact.log 2>&1 &
