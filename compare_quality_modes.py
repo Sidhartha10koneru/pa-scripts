@@ -80,3 +80,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#nohup python -u quality_code_analysis.py --years 2022 2023 2024 2025 2026 --out qc_analysis > run_qc_analysis.log 2>&1 &
+# PA_QUALITY_MODE=keep    nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_keep    > run_qc_keep.log 2>&1 &
+# PA_QUALITY_MODE=false   nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_false   > run_qc_false.log 2>&1 &
+# PA_QUALITY_MODE=exclude nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --val-start 2026-03-01 --refit-full --es-metric average_precision --out exp_qc_exclude > run_qc_exclude.log 2>&1 &
+#python compare_quality_modes.py exp_qc_keep=keep exp_qc_false=false exp_qc_exclude=exclude --out qc_compare
