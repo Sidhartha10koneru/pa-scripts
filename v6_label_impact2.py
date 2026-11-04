@@ -199,6 +199,24 @@ def main():
     lp = t_true[t_true.CSN.isin(lost.index)].groupby("PAYOR_CLEAN", observed=True).CSN.nunique().sort_values(ascending=False).head(10)
     print("   payors of those visits:\n", lp.to_string())
 
+    # OWNER RULE: flip a passenger only if its claim keeps at least one TRUE line that is neither a quality code
+    # nor itself flipped (= the auth has an 'owner'). Claims with no owner left = visit-level / referral auth -> keep TRUE.
+    stays = t_true[~t_true.index.isin(gone)]
+    owner_claims = set(stays.CLAIM)
+    fo = fm_ex[fm_ex.CLAIM.isin(owner_claims)]
+    no_owner = fm_ex[~fm_ex.CLAIM.isin(owner_claims)]
+    print(f"\n== OWNER RULE (threshold {mid:.0%}, exceptions excluded): flip {len(fo):,} TRUE lines "
+          f"({len(fo) / max(all_true, 1):.1%} of TRUE), test services {len(fo[fo.window == 'test'][['CSN', 'FINAL_CPT']].drop_duplicates()):,}; "
+          f"kept TRUE as visit-level auth: {len(no_owner):,} lines on {no_owner.CLAIM.nunique():,} claims")
+    print("   by year:\n", fo.groupby("YEAR").size().to_string())
+    print("   top codes flipped:\n", fo.groupby("FINAL_CPT", observed=True).size().sort_values(ascending=False).head(12).to_string())
+    print("   kept as visit-level auth, by payor:\n",
+          no_owner.groupby("PAYOR_CLEAN", observed=True).size().sort_values(ascending=False).head(10).to_string())
+    gone2 = pd.concat([t_true[t_true.is_quality], fo]).index.unique()
+    v2 = t_true.assign(flip=t_true.index.isin(gone2)).groupby("CSN").flip.all()
+    print(f"   R1 under owner rule: visits losing all PA = {int(v2.sum()):,} (only quality-code-only visits should remain)")
+    fo[["CSN", "CLAIM", "FINAL_CPT", "PAYOR_CLEAN", "YEAR"]].to_csv(f"{a.out}/owner_rule_flips.csv", index=False)
+
     # R3: codes we cannot classify but that carry many shared-auth TRUE lines
     unc = r[~r.classifiable].sort_values("shared_auth_TRUE_lines", ascending=False)
     unc[["size_alone", "rate_alone", "size_with", "rate_with", "shared_auth_TRUE_lines"]].head(30).to_csv(f"{a.out}/R3_unclassifiable.csv")
@@ -223,4 +241,5 @@ def main():
 if __name__ == "__main__":
     main()
 
-#nohup python -u v6_label_impact.py --years 2025 2026 --rate-basis amb_false --out v6_impact_ambf > run_v6_impact_ambf.log 2>&1 &
+
+#nohup python -u v6_label_impact.py --years 2025 2026 --rate-basis amb_false --thresholds 0.01 0.02 0.05 --out v6_impact_owner > run_v6_impact_owner.log 2>&1 &
