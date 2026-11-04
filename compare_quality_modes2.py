@@ -1,5 +1,6 @@
+
 """
-compare_quality_modes.py - compare models trained with quality codes kept / labelled FALSE / excluded.
+compare_quality_modes.py - compare models trained with quality codes kept / labelled FALSE / excluded.n
 
 Fair comparison = the services every model is scored on, with the SAME labels:
   A. non-quality services (labels identical in all three runs)    <- main result
@@ -65,7 +66,7 @@ def main():
     for item in a.runs:
         folder, label = item.split("=") if "=" in item else (item, item)
         s = services(f"{folder}/test_preds.parquet")
-        keys[label] = set(zip(s.CSN, s.FINAL_CPT))
+        keys[label] = set(zip(s.CSN[~s.q], s.FINAL_CPT[~s.q]))          # non-quality services of this run
         nq = s[~s.q]
         rows.append(metrics(nq.y, nq.score, "A non-quality services", label))
         rows.append(metrics(s.y, s.score, "B all services (own test set)", label))
@@ -73,7 +74,11 @@ def main():
         rows.append(metrics(v.y, v.score, "C visits (non-quality services)", label))
         print(f"{label}: {len(s):,} services ({int(s.q.sum()):,} quality) | PA {int(s.y.sum()):,} "
               f"(quality PA {int(s[s.q].y.sum()):,})")
-    nq_sets = [{k for k in v if not pd.Series([k[1]]).str.fullmatch(QUALITY).iloc[0]} for v in keys.values()]
+    nq_sets = list(keys.values())
+    if len(nq_sets) > 1:
+        common = set.intersection(*nq_sets)
+        print("non-quality services per run: " + ", ".join(f"{k} {len(v):,}" for k, v in keys.items())
+              + f" | in all runs: {len(common):,}")
     if len(nq_sets) > 1 and any(x != nq_sets[0] for x in nq_sets[1:]):
         print("!! WARNING: the non-quality services differ between runs - check that all runs used the same test window/filters")
     M = pd.DataFrame(rows)
