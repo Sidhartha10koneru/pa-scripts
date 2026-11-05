@@ -1,21 +1,11 @@
-nohup python -u fn_root_cause.py --buckets 1 --cover 0.9 --out rc_b1 > run_rc_b1.log 2>&1 &
-
-
 import numpy as np, pandas as pd
-THERAPY = r"^(97\d{3}|9894[0-2]|92507|92526)$"
-b = pd.read_csv("rc_b1/fn_causes.csv", dtype=str)
-b["shared"] = b.t2_shared_with.fillna("").ne("")
-code_lab = b.t1_source.isin(["PA denial code", "other remit row"])
-b["problem"] = np.select(
-    [code_lab,
-     b.t1_source.eq("auth number") & b.shared & b.FINAL_CPT.str.match(THERAPY),
-     b.t1_source.eq("auth number") & b.shared,
-     b.t1_source.eq("auth number") & ~b.shared],
-    ["2/3 code denial", "4 therapy", "1 claim-level auth", "5 own auth"], "no TRUE line found")
-b["family"] = np.select([b.FINAL_CPT.str.fullmatch(r"\d{4}F"), b.FINAL_CPT.str.fullmatch(r"99[2-4]\d\d|G2211"),
-                         b.FINAL_CPT.str.fullmatch(r"8\d{4}|36415")], ["quality F code", "E/M", "lab"], "other")
-print(len(b)); print(b.problem.value_counts())
-print(pd.crosstab(b.family, b.problem, margins=True))
-print(b[b.problem == "1 claim-level auth"].groupby("FINAL_CPT").size().sort_values(ascending=False).head(15))
-
-
+def svc(p):
+    t = pd.read_parquet(p); c = [x for x in t.columns if x.startswith("p_")][0]
+    s = t.groupby(["CSN", "FINAL_CPT"]).agg(y=("y", "max"), s=(c, "max")).reset_index()
+    return s[~s.FINAL_CPT.astype(str).str.fullmatch(r"\d{4}F")]
+for a, b in [("exp_nofilter_2022", "exp_qc_exclude_rv"), ("exp_keep_s7", "exp_exclude_s7")]:
+    A, B = svc(f"{a}/test_preds.parquet"), svc(f"{b}/test_preds.parquet")
+    cut = np.quantile(A.s[A.y == 1], 0.20); budget = int(((A.s >= cut) & (A.y == 0)).sum())   # base FP at 80% recall
+    neg = np.sort(B.s[B.y == 0].to_numpy())[::-1]; cut_b = neg[budget - 1]                    # B's cut-off with the same FP
+    print(f"{a} vs {b}: FP budget {budget:,} | TP base {int(((A.s >= cut) & (A.y == 1)).sum()):,} "
+          f"| TP exclude {int(((B.s >= cut_b) & (B.y == 1)).sum()):,}")
