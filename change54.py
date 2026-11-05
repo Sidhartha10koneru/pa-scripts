@@ -3,7 +3,7 @@ derive_test_set.py - rebuild the benchmark test set (no-filter baseline, exp_nof
 standalone (pandas + pyarrow only), printing the counts after every step so they can be compared.
 
 Benchmark test set (expected at the end):
-  2,182,493 lines | 835,591 visits (CSN) | 1,949,656 services (CSN + CPT) | 52,278 PA services | PA line rate 2.6768%
+  2,182,493 lines | 835,591 visits (CSN) | 1,949,656 services (CSN + CPT) | 52,278 PA services | PA line rate 2.6768% new
 
 Steps (same order as the pipeline, pa_base_adapter.prep + pa_experiments.split):
   0. read the std v4 file of each year (all rows)
@@ -50,6 +50,9 @@ def main():
         names = pq.read_schema(PATH.format(year=y), filesystem=fs).names
         d = pd.read_parquet(PATH.format(year=y), filesystem=fs, columns=list(dict.fromkeys(c for c in COLS if c in names)))
         d = d.loc[:, ~d.columns.duplicated()]
+        for c in ["CSN", "FINAL_CPT", "FINAL_MODIFIERS", "SERVICEDATE"]:   # plain text, never categorical
+            if c in d:
+                d[c] = d[c].astype(object).where(d[c].notna(), None).astype(str)
         show(f"[{y}] 0. raw file", d)
         lab = d.GROUP_LABEL.astype(str).str.strip().str.upper()
         d["y"] = lab.map({"TRUE": 1, "1": 1, "1.0": 1, "FALSE": 0, "0": 0, "0.0": 0})
@@ -76,7 +79,7 @@ def main():
     t = t[t.CSN.isin(test_visits)]
     show("5b. ...and visit's first date in the test window = TEST", t)
 
-    s = t.groupby(["CSN", "FINAL_CPT"]).y.max()
+    s = t.groupby(["CSN", "FINAL_CPT"], observed=True).y.max()
     print(f"\nTEST: {len(t):,} lines | {t.CSN.nunique():,} visits | {len(s):,} services | "
           f"{int(s.sum()):,} PA services | PA line rate {t.y.mean():.4%}")
     print("expected: 2,182,493 lines | 835,591 visits | 1,949,656 services | 52,278 PA services | 2.6768%")
