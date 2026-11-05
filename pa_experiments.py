@@ -26,6 +26,9 @@ Outputs in --out: month_counts.csv, metrics.csv, calibration_bins.csv, operating
   test_preds.parquet, models/*.txt + models/*_categories.json, split_info.json
 """
 import argparse
+import hashlib
+import shutil
+import sys
 import json
 import os
 import time
@@ -546,8 +549,17 @@ def main():
                "sample": a.sample, "rules": rules, "years": sorted(set(a.train_years + a.test_years)),
                "models": a.models, "dedup_keep_true": pb.DEDUP_KEEP_TRUE, "include_secondary": a.include_secondary, "secondary_in_test": a.secondary_in_test,
                "val_start": a.val_start, "refit_full": a.refit_full, "es_metric": a.es_metric,
-               "rows": {"train": len(train), "update": len(update), "test": len(test)}},
+               "rows": {"train": len(train), "update": len(update), "test": len(test)},
+               # provenance: exact command, PA_* settings, data path/label, seed, code fingerprint
+               "command": " ".join(sys.argv), "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+               "env": {k: v for k, v in os.environ.items() if k.startswith("PA_")},
+               "base_path": pb.BASE_PATH, "label_col": pb.LABEL, "quality_mode": pb.QUALITY_MODE, "seed": pb.SEED,
+               "code_sha256": {f: hashlib.sha256(open(f, "rb").read()).hexdigest()[:12]
+                               for f in (__file__, pb.__file__)}},
               open(f"{a.out}/split_info.json", "w"), indent=1)
+    os.makedirs(f"{a.out}/code", exist_ok=True)            # snapshot of the exact code used for this run
+    for f in (__file__, pb.__file__):
+        shutil.copy(f, f"{a.out}/code/")
     if min(len(train), len(update), len(test)) == 0:
         raise SystemExit("One window is empty - change --update-start / --test-start.")
     if a.mode == "cells":
