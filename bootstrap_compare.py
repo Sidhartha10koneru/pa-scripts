@@ -100,3 +100,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#nohup python -u bootstrap_compare.py exp_nofilter_2022 exp_qc_exclude_rv --n 200 --out qc_bootstrap > run_qc_bootstrap.log 2>&1 &
+
+
+# PA_SEED=7 nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_keep_s7 > run_keep_s7.log 2>&1 &
+# # after it finishes:
+# PA_SEED=7 PA_QUALITY_MODE=exclude nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 --sample 1.0 --models lgb_full --include-secondary --secondary-in-test --out exp_exclude_s7 > run_exclude_s7.log 2>&1 &
+# # then:
+# python compare_quality_modes.py exp_keep_s7=keep exp_exclude_s7=exclude --out qc_compare_s7
