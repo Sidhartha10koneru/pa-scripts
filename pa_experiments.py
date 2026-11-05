@@ -128,14 +128,14 @@ def val_split(df):
         first = df.groupby(CSN).SVC_DATE.transform("min")
         va = (first >= pd.Timestamp(VAL_START)).values
         return np.where(~va)[0], np.where(va)[0]
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=pb.SEED)
     return next(gss.split(df, groups=df[CSN]))
 
 
 def split_stats(df, prefix=""):
     """train / validation sizes exactly as train_lgb splits them"""
     tr_i, va_i = val_split(df)
-    out = {"validation": f"time: visits from {VAL_START}" if VAL_START else "random 10% of visits (seed 42)",
+    out = {"validation": f"time: visits from {VAL_START}" if VAL_START else f"random 10% of visits (seed {pb.SEED})",
            "refit_full": REFIT_FULL}
     for n, x in (("train", df.iloc[tr_i]), ("val", df.iloc[va_i])):
         out |= {f"{n}_lines": len(x), f"{n}_visits": int(x[CSN].nunique()), f"{n}_pa_rate": float(x.y.mean()),
@@ -564,11 +564,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# nohup python -u pa_experiments.py baselines --train-years 2022 2023 2024 2025 --test-years 2026 \
-#   --update-start 2026-02-01 --test-start 2026-05-01 --test-end 2026-08-01 \
-#   --sample 1.0 --models lgb_full --include-secondary --secondary-in-test \
-#   --val-start 2026-03-01 --refit-full --es-metric average_precision \
-#   --out exp_timeval_2m_ap_2022 > run_timeval_2m_ap_2022.log 2>&1 &
-
-#python make_report.py exp_nofilter_2022=2022_randomval exp_timeval_2m_2022=2022_timeval_logloss exp_timeval_2m_ap_2022=2022_timeval_ap --out experiment_validation
