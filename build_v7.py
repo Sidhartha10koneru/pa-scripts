@@ -97,6 +97,8 @@ def main():
         c = {"rows": 0, "rows_with_acuity_code": 0, "V6_TRUE": 0, "V7_TRUE": 0, "V7_STRICT_TRUE": 0,
              "to_TRUE_auth_only": 0, "to_TRUE_mixed_only": 0, "quality_kept_FALSE": 0, "matched_keys_check": 0}
         per_code = {k: 0 for k in ACUITY}
+        q_code = {k: 0 for k in ACUITY}                 # quality-code lines held FALSE, by Acuity code
+        q_orig = {}                                     # ... and their original GROUP_LABEL
         for b in d.to_batches(batch_size=500_000):
             t = b.to_pandas()
             k = norm_keys(t[keys], keys)
@@ -123,8 +125,14 @@ def main():
             c["to_TRUE_auth_only"] += int(flip_strict.sum())
             c["to_TRUE_mixed_only"] += int((flip_full & ~flip_strict).sum())
             c["quality_kept_FALSE"] += int((has_any & q & ~v6.isin(TRUE_SET)).sum())
+            qh = has_any & q
             for code in ACUITY:
-                per_code[code] += int((flip_full & cs.map(lambda l: code in l)).sum())
+                has_c = cs.map(lambda l: code in l)
+                per_code[code] += int((flip_full & has_c).sum())
+                q_code[code] += int((qh & has_c).sum())
+            g = t.GROUP_LABEL.astype(str).str.strip().str.upper()[qh].value_counts()
+            for kk, vv in g.items():
+                q_orig[kk] = q_orig.get(kk, 0) + int(vv)
             if not a.dry_run:
                 tb = pa.Table.from_pandas(t, preserve_index=False)
                 if writer is None:
@@ -134,11 +142,14 @@ def main():
             writer.close()
             assert pq.read_metadata(out_p, filesystem=out_fs).num_rows == c["rows"], f"{y}: row count mismatch"
         assert c["V7_TRUE"] - c["V6_TRUE"] == c["to_TRUE_auth_only"] + c["to_TRUE_mixed_only"], f"{y}: TRUE count check failed"
-        man["years"][y] = c | {"newly_TRUE_by_code": per_code, "keys": keys}
+        man["years"][y] = c | {"newly_TRUE_by_code": per_code, "quality_held_FALSE_by_code": q_code,
+                               "quality_held_original_label": q_orig, "keys": keys}
         print(f"[{y}] rows {c['rows']:,} | with Acuity code {c['rows_with_acuity_code']:,} | TRUE v6 {c['V6_TRUE']:,} -> "
               f"v7 {c['V7_TRUE']:,} (+{c['V7_TRUE'] - c['V6_TRUE']:,}) | v7_strict {c['V7_STRICT_TRUE']:,} "
               f"(+{c['to_TRUE_auth_only']:,}) | quality kept FALSE {c['quality_kept_FALSE']:,} | {time.time() - t0:.0f}s")
         print("      newly TRUE by code:", {k: v for k, v in per_code.items() if v})
+        print("      quality codes held FALSE, by code:", {k: v for k, v in q_code.items() if v},
+              "| original label:", q_orig)
     json.dump(man, open(a.manifest, "w"), indent=1)
     print(f"manifest -> {a.manifest}")
 
