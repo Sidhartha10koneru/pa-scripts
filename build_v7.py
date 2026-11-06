@@ -1,5 +1,5 @@
 """
-build_v7.py - v7 dataset = v6 (v4 + quality-code columns) + labels from the business's (Acuity) PA denial codes.
+build_v7.py - v7 dataset = v6 (v4 + quality-code columns) + labels from the business's (Acuity) PA denial codes. New
 
 Source of the code list: "Acuity - Auth Denials CARC Codes" (Anesha Parker / Paula, 22 Oct 2026):
 17 CARCs with category = Denial, sub_category = Authorization / Pre-Certification.
