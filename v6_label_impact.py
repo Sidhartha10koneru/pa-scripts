@@ -240,3 +240,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#nohup python -u v6_label_impact.py --years 2022 2023 2024 2025 2026 --rate-basis amb_false --thresholds 0.01 0.02 0.05 --test-start 2026-08-01 --out v6_impact_allyears > run_v6_impact_allyears.log 2>&1 &
