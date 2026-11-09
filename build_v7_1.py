@@ -1,6 +1,6 @@
 """
-build_v7_1.py - v7.1 = v7 + passenger relabel (a service that is TRUE only because another service's auth
-number is on the same claim). Every v7 row and column is kept; new columns are added.
+build_v7_1.py - v8 DRAFT = v7 + passenger relabel (not yet tested/verified; folder std_data_v8_draft) (a service that is TRUE only because another service's auth
+number is on the same claim). Every v7 row and column is kept; new columns are added. new
 
 Rule (as measured in v6_label_impact.py, owner rule, run with --rate-basis amb_false --thresholds 0.01 0.02 0.05):
   a line is a PASSENGER when ALL hold
@@ -19,15 +19,15 @@ New columns
   LABEL_V6_PAX       LABEL_V6        with passengers set FALSE
   LABEL_V7_STRICT_PAX LABEL_V7_STRICT with passengers set FALSE, unless the line has its own Acuity code
   LABEL_V7_PAX       LABEL_V7        with passengers set FALSE, unless the line has its own Acuity code
-  LABEL_VERSION      'v7.1'
+  LABEL_VERSION      'v8.0-draft'
 No label ever goes FALSE -> TRUE here.
 
 Inputs: the two CSVs from the owner-rule impact run (default folder v6_impact_owner/).
 Run:
   python build_v7_1.py --years 2022 2023 2024 2025 2026 --dry-run
   nohup python -u build_v7_1.py --years 2022 2023 2024 2025 2026 \
-     --out-path "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v7_1/ai_prior_auth_09282026_v3_{year}_std.parquet" \
-     > run_build_v7_1.log 2>&1 &
+     --out-path "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v8_draft/ai_prior_auth_09282026_v3_{year}_std.parquet" \
+     > run_build_v8_draft.log 2>&1 &
 """
 import argparse
 import json
@@ -43,7 +43,7 @@ import pyarrow.parquet as pq
 import pa_base_adapter as pb
 
 V7 = "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v7/ai_prior_auth_09282026_v3_{year}_std.parquet"
-VERSION = "v7.1"
+VERSION = "v8.0-draft"   # passenger rule not yet tested/approved
 BLANK = {"", "NAN", "NONE", "NULL", "<NA>"}
 NO_AUTH = r"(NO\s*(REF|REFERRAL|AUTH|PA|PRIOR)\b.*|NOT\s*REQ.*|NAR|NPN|NPAR|N/?A|NONE|0+)"
 TRUE_SET = {"TRUE", "1", "1.0"}
@@ -81,7 +81,7 @@ def main():
     ap.add_argument("--impact-dir", default="v6_impact_owner", help="folder with P_list_thr2.csv, R2_payor_exceptions.csv")
     ap.add_argument("--out-path", default="")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--manifest", default="v7_1_manifest.json")
+    ap.add_argument("--manifest", default="v8_draft_manifest.json")
     a = ap.parse_args()
     if not a.dry_run and ("{year}" not in a.out_path or any(v in a.out_path for v in ["std_data_v4/", "std_data_v6/", "std_data_v7/"])):
         raise SystemExit("--out-path must contain {year} and must not point at v4/v6/v7 (or use --dry-run)")
@@ -90,7 +90,7 @@ def main():
     exc = set(zip(e.FINAL_CPT.str.strip().str.upper(), e.PAYOR_CLEAN.astype(str)))
     print(f"passenger list: {len(plist)} CPTs | payor exceptions: {len(exc)} pairs")
     fs = pafs.S3FileSystem()
-    man = {"version": VERSION, "n_list": len(plist), "n_exceptions": len(exc), "base": a.base_path, "years": {}}
+    man = {"version": VERSION, "status": "DRAFT - passenger rule not yet tested or approved", "n_list": len(plist), "n_exceptions": len(exc), "base": a.base_path, "years": {}}
 
     for y in a.years:
         t0 = time.time()
@@ -150,6 +150,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-#python build_v7_1.py --years 2022 2023 2024 2025 2026 --impact-dir v6_impact_owner --dry-run
-#nohup python -u build_v7_1.py --years 2022 2023 2024 2025 2026 --impact-dir v6_impact_owner --out-path "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v7_1/ai_prior_auth_09282026_v3_{year}_std.parquet" > run_build_v7_1.log 2>&1 &
+#nohup python -u build_v7_1.py --years 2022 2023 2024 2025 2026 --impact-dir v6_impact_owner --out-path "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v8_draft/ai_prior_auth_09282026_v3_{year}_std.parquet" > run_build_v8_draft.log 2>&1 &
