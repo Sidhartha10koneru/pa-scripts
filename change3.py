@@ -1,10 +1,1 @@
-import pandas as pd
-a = set(pd.read_csv("v6_impact_owner/P_list_thr2.csv", dtype=str).FINAL_CPT)
-b = set(pd.read_csv("v6_impact_allyears/P_list_thr2.csv", dtype=str).FINAL_CPT)
-ea = pd.read_csv("v6_impact_owner/R2_payor_exceptions.csv", dtype=str)
-eb = pd.read_csv("v6_impact_allyears/R2_payor_exceptions.csv", dtype=str)
-print(f"list: current {len(a)} | all-years {len(b)} | in both {len(a & b)}")
-print("only current :", sorted(a - b))
-print("only all-yrs :", sorted(b - a))
-print(f"exceptions: current {len(ea)} | all-years {len(eb)}")
-print(pd.read_csv("v6_impact_allyears/P_size_by_threshold.csv").to_string(index=False))
+python build_v7_1.py --years 2022 2023 2024 2025 2026 --impact-dir v6_impact_allyears --dry-run --manifest v8_draft_allyears_dryrun.json
