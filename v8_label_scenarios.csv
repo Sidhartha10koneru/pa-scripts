@@ -1,0 +1,9 @@
+Scenario,PA_LABEL_COL,PA_QUALITY_MODE,Quality codes,Passenger lines,Acuity codes,Notes
+Reproduce the original benchmark,GROUP_LABEL,keep,"Kept, original label",Original label,Not used,"Matches old results (FN 18,070)"
+Current baseline,GROUP_LABEL,exclude,Removed,Original label,Not used,The base to compare everything against
+Quality codes as FALSE rows,LABEL_V6,keep,"Kept, FALSE",Original label,Not used,Tested: slightly worse than the baseline
+Passenger fix only,LABEL_V6_PAX,exclude,Removed,FALSE,Not used,Isolates the passenger effect
+Acuity auth-only codes,LABEL_V7_STRICT,exclude,Removed,Original label,10 auth-only codes -> TRUE,"+4,369 TRUE lines"
+Recommended candidate,LABEL_V7_STRICT_PAX,exclude,Removed,FALSE (unless the line has its own Acuity code),10 auth-only codes -> TRUE,Auth-only codes + passenger fix
+Full Acuity list,LABEL_V7,exclude,Removed,Original label,All 17 codes -> TRUE,Changes the target (~2.5x PA lines)
+Full Acuity list + passenger fix,LABEL_V7_PAX,exclude,Removed,FALSE (unless the line has its own Acuity code),All 17 codes -> TRUE,Same caveat as above
