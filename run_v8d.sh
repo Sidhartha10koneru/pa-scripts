@@ -45,3 +45,8 @@ for i in "${!RUNS[@]}"; do
     >> "logs_v8d/$OUT.log" 2>&1 && grep -E "^pa-|AUC_PR|FP@80|coverage" "logs_v8d/$OUT.log" | tail -6
 done
 echo "done $(date '+%F %T')"
+
+
+# nohup bash run_v8d.sh > run_v8d.log 2>&1 &        # all 7
+# nohup bash run_v8d.sh 0 1 > run_v8d.log 2>&1 &    # or just sanity + recommended first
+# tail -f run_v8d.log
