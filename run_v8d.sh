@@ -26,8 +26,26 @@ RUNS=(
 
 CMD=$(python - "$REF_RUN" <<'EOF'
 import json, re, sys
-c = json.load(open(f"{sys.argv[1]}/split_info.json"))["command"]
-print(re.sub(r"\s--out\s+\S+", "", c))
+i = json.load(open(f"{sys.argv[1]}/split_info.json"))
+if "command" in i:                       # run made after provenance was added: exact command
+    print(re.sub(r"\s--out\s+\S+", "", i["command"]))
+    sys.exit(0)
+# older run: rebuild the command from the settings it recorded (same split, filters, models)
+if i.get("rules"):
+    sys.exit("reference run used the rules feature - its command cannot be rebuilt; pass a REF_RUN with 'command'")
+y = [str(v) for v in i["years"]]
+c = ["pa_experiments.py", "baselines", "--train-years", *y, "--test-years", y[-1],
+     "--update-start", str(i["update_start"]), "--test-start", str(i["test_start"]), "--sample", str(i["sample"])]
+if i.get("test_end"):          c += ["--test-end", str(i["test_end"])]
+if i.get("models"):            c += ["--models", *i["models"]]
+if i.get("include_secondary"): c += ["--include-secondary"]
+if i.get("secondary_in_test"): c += ["--secondary-in-test"]
+if i.get("dedup_keep_true") is False: c += ["--dedup-first"]
+if i.get("val_start"):         c += ["--val-start", str(i["val_start"])]
+if i.get("refit_full"):        c += ["--refit-full"]
+if i.get("es_metric"):         c += ["--es-metric", str(i["es_metric"])]
+print(" ".join(c))
+print("NOTE: rebuilt from recorded settings (no 'command' in split_info.json) - check it matches the run", file=sys.stderr)
 EOF
 ) || { echo "cannot read $REF_RUN/split_info.json"; exit 1; }
 echo "reference command (without --out): python -u $CMD"
@@ -41,6 +59,18 @@ for i in "${!RUNS[@]}"; do
   PA_BASE_PATH="$V8D" PA_LABEL_COL="$LABEL" PA_QUALITY_MODE=exclude PA_SEED="$SEED" \
     python -u $CMD --out "$OUT" > "logs_v8d/$OUT.log" 2>&1
   if [ $? -ne 0 ]; then echo "    FAILED - see logs_v8d/$OUT.log"; tail -5 "logs_v8d/$OUT.log"; continue; fi
+  # older pa_experiments.py does not record its settings: add what this script set, so the run ID is right
+  python - "$OUT" "$V8D" "$LABEL" "$SEED" "python -u $CMD --out $OUT" <<'EOF'
+import json, sys
+out, bp, lab, seed, cmd = sys.argv[1:]
+p = f"{out}/split_info.json"; i = json.load(open(p))
+if "label_col" not in i:
+    i.update(base_path=bp, label_col=lab, quality_mode="exclude", seed=int(seed), command=cmd,
+             env={"PA_BASE_PATH": bp, "PA_LABEL_COL": lab, "PA_QUALITY_MODE": "exclude", "PA_SEED": seed},
+             provenance_added_by="run_v8d.sh")
+    json.dump(i, open(p, "w"), indent=1)
+    print("    settings added to split_info.json (pa_experiments.py has no provenance recording)")
+EOF
   python register_run.py "$OUT" --frozen "$FROZEN" --status "$STATUS" --notes "v8 draft: $NOTE" \
     >> "logs_v8d/$OUT.log" 2>&1 && grep -E "^pa-|AUC_PR|FP@80|coverage" "logs_v8d/$OUT.log" | tail -6
 done
