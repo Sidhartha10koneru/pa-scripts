@@ -76,7 +76,8 @@ EOF
 done
 echo "done $(date '+%F %T')"
 
-
+# nohup bash run_v8d.sh 0 1 > run_v8d.log 2>&1 &
+# head -3 run_v8d.log
 # nohup bash run_v8d.sh > run_v8d.log 2>&1 &        # all 7
 # nohup bash run_v8d.sh 0 1 > run_v8d.log 2>&1 &    # or just sanity + recommended first
 # tail -f run_v8d.log
