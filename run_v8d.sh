@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_v8d.sh - train the v8-draft label candidates with EXACTLY the settings of the quality-exclude candidate run,
+# run_v8d.sh - train the v8-draft label candidates with EXACTLY the settings of the quality-exclude candidate run, new
 # then register each on the frozen official test set (original labels -> every run scored on the same services/labels).
 #
 # Only PA_BASE_PATH, PA_LABEL_COL and PA_SEED change; the training command is copied from REF_RUN/split_info.json.
