@@ -177,3 +177,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+nohup python -u profile_visit_level_auth.py --years 2022 2023 2024 2025 2026 --out vla_profile \
+   > run_vla_profile.log 2>&1 &
+
+
