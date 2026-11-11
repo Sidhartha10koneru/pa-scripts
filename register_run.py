@@ -10,8 +10,9 @@ For one run folder it:
 
 Naming convention  pa-<model>-<data>-<labels>-<qc>-<val>-s<seed>-<train years>-<test window>-<yyyymmdd>
   model   lgb5          LightGBM, 5 base features (+feature tag if --extra-feats, e.g. lgb5+dept)
-  data    v4 / v6       dataset version read
-  labels  grp / l6      GROUP_LABEL / LABEL_V6
+  data    v4 / v6 / v7 / v8d   dataset version read (d = draft folder)
+  labels  grp / l6 / l6pax / l7 / l7s / l7spax / l7pax
+          GROUP_LABEL / LABEL_V6 / LABEL_V6_PAX / LABEL_V7 / LABEL_V7_STRICT / LABEL_V7_STRICT_PAX / LABEL_V7_PAX
   qc      qckeep / qcfalse / qcexcl     quality-code handling
   val     rv10 / tv<yyyymm>             random 10% visits / time-based from that month (+ref if refit)
   seed    s42           training + validation seed
@@ -39,6 +40,8 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 QUALITY = r"^\d{4}F$"
 S3 = "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/model_registry"
+LABEL_TAGS = {"GROUP_LABEL": "grp", "LABEL_V6": "l6", "LABEL_V6_PAX": "l6pax", "LABEL_V7": "l7",
+              "LABEL_V7_STRICT": "l7s", "LABEL_V7_STRICT_PAX": "l7spax", "LABEL_V7_PAX": "l7pax"}
 
 
 def jload(p):
@@ -46,8 +49,10 @@ def jload(p):
 
 
 def run_id(info, a, created):
-    data = "v6" if "v6" in str(info.get("base_path", "")) else "v4"
-    labels = "l6" if info.get("label_col", "GROUP_LABEL") == "LABEL_V6" else "grp"
+    bp = str(info.get("base_path", ""))
+    m = re.search(r"std_data_(v\d+)(_draft)?", bp)
+    data = (m.group(1) + ("d" if m.group(2) else "")) if m else "v4"
+    labels = LABEL_TAGS.get(info.get("label_col", "GROUP_LABEL"), str(info.get("label_col")).lower().replace("_", ""))
     qc = a.qc or {"keep": "qckeep", "false": "qcfalse", "exclude": "qcexcl"}.get(info.get("quality_mode", "keep"))
     if data == "v6" and labels == "l6" and qc == "qckeep":
         qc = "qcfalse"                                             # v6 LABEL_V6 = quality codes FALSE
