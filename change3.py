@@ -1,1 +1,0 @@
-python -c "import pandas as pd; r=pd.read_csv('registry.csv'); print(r[r.run_id.str.contains('v8d|qcexcl')][['run_id','best_thr','TP@best','FP@best','FN@best','AUC_PR','visit_AUC_PR']].to_string(index=False))"
