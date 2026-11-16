@@ -188,3 +188,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+python precision_ceiling.py --run exp_v8d_l6pax_s42 \
+    --frozen frozen/test_v1_2026-05_2026-07 --labels-from exp_v8d_l6pax_s42
+
