@@ -19,7 +19,7 @@ its lines. Score of a service = max over its lines.
 If the realistic ceiling at 80% recall is far below 90% precision, 90% needs NEW information (diagnosis, prior
 auths, provider, payer rules), not a better model. If the ceiling is far above the model, the model is the issue.
 
-Needs fn_buckets.py in the same folder (pandas, numpy, pyarrow). Run from the experiments folder:
+Self-contained (pandas, numpy, pyarrow); only --with-history also needs the latest fn_buckets.py next to it. Run from the experiments folder:
   python precision_ceiling.py --run exp_v8d_l6pax_s42 \
       --frozen frozen/test_v1_2026-05_2026-07 --labels-from exp_v8d_l6pax_s42 [--with-history]
 Output: <run>/precision_ceiling/{metrics.csv, pa_by_combination_rate.csv} + printed tables.
@@ -30,11 +30,80 @@ import os
 import numpy as np
 import pandas as pd
 
-import fn_buckets as fb
-
 RECALLS = (0.70, 0.75, 0.80, 0.85, 0.90)
 PRECISIONS = (0.50, 0.60, 0.70, 0.80, 0.90)
 LINE_CELL = ["FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE", "PAYOR_PLAN_CLEAN"]
+KEY = ["FINAL_CPT", "FINAL_MODIFIERS", "PLACE_OF_SERVICE_CODE", "PAYOR_PLAN_CLEAN"]
+PAYOR, PLAN = "PAYOR", "PLAN"
+
+
+# ---------------------------------------------------------------------------------------------------- inputs
+# (copied from fn_buckets.py so this script runs on its own)
+def read_any(path, rename=None, columns=None):
+    """parquet or csv; rename = {their column: our column}"""
+    t = pd.read_csv(path, low_memory=False) if str(path).lower().endswith(".csv") else pd.read_parquet(path)
+    t = t.loc[:, ~t.columns.duplicated()]
+    if rename:
+        t = t.rename(columns=rename)
+    return t[[c for c in columns if c in t]] if columns else t
+
+
+def predictions_path(a):
+    """--preds as a path, or as a file name inside --run"""
+    if a.preds and os.path.exists(a.preds):
+        return a.preds
+    if a.run and os.path.exists(f"{a.run}/{a.preds or 'test_preds.parquet'}"):
+        return f"{a.run}/{a.preds or 'test_preds.parquet'}"
+    raise SystemExit(f"predictions file not found: --preds {a.preds} (--run {a.run})")
+
+
+def clean_name(x):
+    """upper-case, squeeze spaces, drop date suffixes like 'AS OF 01/01/2026' (same as training)"""
+    x = x.astype(str).str.upper().str.replace(r"\bAS OF\b.*$", "", regex=True)
+    return x.str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def test_services(preds, frozen=None, labels_from=None, score_col=None, rename=None):
+    """CSN + CPT services: label = max, score = max, cell keys of the highest-scoring line"""
+    t = read_any(preds, rename)
+    p = [score_col] if score_col else [c for c in t.columns if c.startswith("p_")]
+    if len(p) != 1 or p[0] not in t:
+        raise SystemExit(f"{preds}: need one score column (p_* or --score-col), found {p}")
+    if "PAYOR_PLAN_CLEAN" not in t and {PAYOR, PLAN} <= set(t.columns):
+        t["PAYOR_PLAN_CLEAN"] = clean_name(t[PAYOR]) + " | " + clean_name(t[PLAN])
+    need = ["CSN", "y"] + KEY
+    if [c for c in need if c not in t]:
+        raise SystemExit(f"{preds}: missing columns {[c for c in need if c not in t]} (see INPUT in the docstring)")
+    t["CSN"] = t.CSN.astype(str).str.replace(r"\.0$", "", regex=True)
+    for c in KEY:
+        t[c] = t[c].astype(object).fillna("").astype(str).str.strip()
+    s = t.groupby(["CSN", "FINAL_CPT"]).agg(y=("y", "max"), score=(p[0], "max")).reset_index()
+    top = t.loc[t.groupby(["CSN", "FINAL_CPT"])[p[0]].idxmax(), ["CSN"] + KEY]
+    s = s.merge(top, on=["CSN", "FINAL_CPT"])
+    src = "run's own test set and labels"
+    if frozen:                                     # same services for every run (quality codes excluded)
+        fz = pd.read_parquet(f"{frozen}/test_set_services.parquet")
+        fz["CSN"] = fz.CSN.astype(str).str.replace(r"\.0$", "", regex=True)
+        fz["FINAL_CPT"] = fz.FINAL_CPT.astype(str).str.strip()
+        keep = fz[fz.IS_QUALITY_CODE == 0][["CSN", "FINAL_CPT", "y"]]
+        if labels_from:                            # same answer key for every run
+            lp = labels_from if os.path.isfile(labels_from) else f"{labels_from}/test_preds.parquet"
+            lab = read_any(lp, rename, ["CSN", "FINAL_CPT", "y"])
+            lab["CSN"] = lab.CSN.astype(str).str.replace(r"\.0$", "", regex=True)
+            lab["FINAL_CPT"] = lab.FINAL_CPT.astype(str).str.strip()
+            keep = keep[["CSN", "FINAL_CPT"]].merge(lab.groupby(["CSN", "FINAL_CPT"]).y.max().reset_index(),
+                                                    on=["CSN", "FINAL_CPT"])
+            src = f"frozen set {frozen}, labels of {labels_from}"
+        else:
+            src = f"frozen set {frozen}, its original labels"
+        missing = len(keep) - len(keep.merge(s[["CSN", "FINAL_CPT"]], on=["CSN", "FINAL_CPT"]))
+        s = keep.merge(s.drop(columns="y"), on=["CSN", "FINAL_CPT"])
+        if missing:
+            print(f"[test] {missing:,} frozen services not scored by this run (left out)")
+    print(f"[test] {len(s):,} services | PA {int(s.y.sum()):,} | {src}")
+    return s, src
+
+
 
 
 # ---------------------------------------------------------------------------------------------------- PR maths
@@ -72,11 +141,11 @@ def auc_pr(c):
 # ---------------------------------------------------------------------------------------------------- combinations
 def service_combinations(preds, rename=None):
     """CSN + CPT -> combination = CPT + sorted set of modifier/POS/payer|plan over its lines"""
-    t = fb.read_any(preds, rename)
+    t = read_any(preds, rename)
     if "PAYOR_PLAN_CLEAN" not in t and {"PAYOR", "PLAN"} <= set(t.columns):
-        t["PAYOR_PLAN_CLEAN"] = fb.clean_name(t.PAYOR) + " | " + fb.clean_name(t.PLAN)
+        t["PAYOR_PLAN_CLEAN"] = clean_name(t.PAYOR) + " | " + clean_name(t.PLAN)
     t["CSN"] = t.CSN.astype(str).str.replace(r"\.0$", "", regex=True)
-    for c in fb.KEY:
+    for c in KEY:
         t[c] = t[c].astype(object).fillna("").astype(str).str.strip()
     t["line_cell"] = t[LINE_CELL].agg("/".join, axis=1)
     sig = (t.drop_duplicates(["CSN", "FINAL_CPT", "line_cell"])
@@ -107,9 +176,10 @@ def two_fold_rate(s, seed=0):
 
 def train_lookup(lines, s, a):
     """max over a service's lines of the training PA rate of the line's cell (unseen -> CPT rate -> 0)"""
+    import fn_buckets as fb                     # only this option needs fn_buckets.py (latest version)
     st = fb.settings(a)
     cell, cpt = fb.cell_history(st)
-    l = lines[["CSN"] + fb.KEY].merge(cell, on=fb.KEY, how="left").merge(cpt, on="FINAL_CPT", how="left")
+    l = lines[["CSN"] + KEY].merge(cell, on=KEY, how="left").merge(cpt, on="FINAL_CPT", how="left")
     l["r"] = l.train_pa_rate.where(l.train_n >= a.min_n).fillna(l.train_cpt_pa_rate).fillna(0)
     r = l.groupby(["CSN", "FINAL_CPT"]).r.max().rename("lookup").reset_index()
     return s.merge(r, on=["CSN", "FINAL_CPT"], how="left").lookup.fillna(0).to_numpy()
@@ -133,9 +203,9 @@ def main():
     a = ap.parse_args()
     out = a.out or f"{a.run}/precision_ceiling"
     os.makedirs(out, exist_ok=True)
-    preds = fb.predictions_path(a)
+    preds = predictions_path(a)
 
-    s, src = fb.test_services(preds, a.frozen, a.labels_from, a.score_col)
+    s, src = test_services(preds, a.frozen, a.labels_from, a.score_col)
     lines, sig = service_combinations(preds)
     s = s.merge(sig, on=["CSN", "FINAL_CPT"], how="left")
     n_combo = s.combo.nunique()
@@ -188,8 +258,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-python precision_ceiling.py --run exp_v8d_l6pax_s42 \
-    --frozen frozen/test_v1_2026-05_2026-07 --labels-from exp_v8d_l6pax_s42
-
