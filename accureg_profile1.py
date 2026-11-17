@@ -7,12 +7,12 @@ payer and plan names.
   python accureg_profile.py --sample 100000    # quick look
 Output: printed summary + CSVs in --out (default accureg_profile/ on EFS - keep it in the project area).
 
-Field numbering: <SEG>_0 is the segment name, so IN1_4 = IN1 field 4. MSH is one lower (MSH_8 = MSH-9 message type).
+Field numbering: <SEG>_0 is the segment name, so IN1_4 = IN1 field 4. MSH is one higher in this file (MSH_10 = MSH-9 message type); dates come from EVN-2 / PV1-44.
 Never printed or saved: PID, NK1, GT1, IN2 (insured person, scrubbed SSNs) and person-level IN1 fields
 (insured name / DOB / address / policy and member numbers: IN1-16, 18, 19, 36, 49). Their fill % is shown, not values.
 
 Sections
-  1 messages   type (MSH-9), date range (MSH-7), patient class (PV1-2), financial class (PV1-20, code without date)
+  1 messages   type (MSH-9 / EVN-1), date range (EVN-2, PV1-44), patient class (PV1-2), financial class (PV1-20, code without date)
   2 IN1        coverage, insurances per message, fill % of every IN1 field, top values of plan / company fields,
                company code -> name consistency
   3 IN3        certification / auth status (IN3-2): top values and how many look like auth numbers
@@ -87,7 +87,7 @@ def main():
     fs, p = fs_path(a.path)
     d = ds.dataset(p, filesystem=fs, format="parquet")
     names = d.schema.names
-    want = [c for c in ["MSH_8", "MSH_6", "PV1_2", "PV1_20", "IN1", "IN3"] if c in names]
+    want = [c for c in ["MSH_10", "EVN_1", "EVN_2", "PV1_44", "PV1_2", "PV1_20", "IN1", "IN3"] if c in names]
     print(f"== file: {a.path} | rows {d.count_rows():,} | columns {len(names)} | reading {want}")
     parts, n = [], 0
     for b in d.to_batches(columns=want, batch_size=100_000):
@@ -101,12 +101,15 @@ def main():
 
     # ------------------------------------------------------------------ 1. messages
     print(f"\n== 1. messages ({N:,})")
-    if "MSH_8" in t:
-        mt = t.MSH_8.map(val).str.replace("^", "_", regex=False)
-        print("   message type (MSH-9):\n" + top(mt, 15).to_string())
-    if "MSH_6" in t:
-        dt = pd.to_datetime(t.MSH_6.map(val).str.slice(0, 8), format="%Y%m%d", errors="coerce")
-        print(f"   message date (MSH-7): {dt.min():%Y-%m-%d} .. {dt.max():%Y-%m-%d} ({dt.isna().mean():.1%} unreadable)")
+    if "MSH_10" in t:                              # this file: MSH-9 message type sits in MSH_10
+        print("   message type (MSH-9, column MSH_10):\n" + top(t.MSH_10.map(val).str.replace("^", "_", regex=False), 15).to_string())
+    if "EVN_1" in t:
+        print("   event type (EVN-1):\n" + top(t.EVN_1.map(val), 15).to_string())
+    for col, lab in [("EVN_2", "event date (EVN-2)"), ("PV1_44", "admit date (PV1-44)")]:
+        if col in t:
+            dt = pd.to_datetime(t[col].map(val).str.slice(0, 8), format="%Y%m%d", errors="coerce")
+            rng = f"{dt.min():%Y-%m-%d} .. {dt.max():%Y-%m-%d}" if dt.notna().any() else "no readable dates"
+            print(f"   {lab}: {rng} ({dt.isna().mean():.1%} unreadable or empty)")
     if "PV1_2" in t:
         print("   patient class (PV1-2):\n" + top(t.PV1_2.map(val), 10).to_string())
     if "PV1_20" in t:
