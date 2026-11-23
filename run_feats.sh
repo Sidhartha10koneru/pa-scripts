@@ -15,7 +15,7 @@ REF_RUN=${REF_RUN:-exp_v8d_l6pax_s42}
 SEED=${SEED:-42}
 
 #      out-name suffix   columns
-GROUPS=(
+FEAT_GROUPS=(
   "dx        Primary_DX"
   "lob       LINE_OF_BUSINESS PRODUCT_NAME"
   "dept      SPECIALTY DEPARTMENT_ID VISITTYPE"
@@ -31,7 +31,7 @@ GROUPS=(
 
 if [ "${1:-}" = "score" ]; then
   RUNS="base=exp_v8d_grp_s42 l6pax=exp_v8d_l6pax_s42 l6paxc=exp_v9d_l6paxc_s42"
-  for g in "${GROUPS[@]}"; do
+  for g in "${FEAT_GROUPS[@]}"; do
     read -r NAME _ <<< "$g"
     for s in 42 7; do [ -f "exp_feat_${NAME}_s$s/test_preds.parquet" ] && RUNS="$RUNS ${NAME}_s$s=exp_feat_${NAME}_s$s"; done
   done
@@ -62,9 +62,9 @@ EOF
 echo "reference command (without --out/--models/--extra-feats): python -u $CMD"
 mkdir -p logs_feats
 SEL=("$@")
-for i in "${!GROUPS[@]}"; do
+for i in "${!FEAT_GROUPS[@]}"; do
   if [ ${#SEL[@]} -gt 0 ] && [[ ! " ${SEL[*]} " =~ " $i " ]]; then continue; fi
-  read -r NAME COLS <<< "${GROUPS[$i]}"
+  read -r NAME COLS <<< "${FEAT_GROUPS[$i]}"
   OUT="exp_feat_${NAME}_s${SEED}"
   echo "=== [$i] $OUT  extra: $COLS  $(date '+%F %T')"
   PA_BASE_PATH="$V8D" PA_LABEL_COL=LABEL_V6_PAX PA_QUALITY_MODE=exclude PA_SEED="$SEED" \
