@@ -1,27 +1,29 @@
-v9 update: option C passenger labels
+python - <<'EOF'
+import pandas as pd, pyarrow.fs as f
+p = 'cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v9_draft/ai_prior_auth_09282026_v3_2026_std.parquet'
+d = pd.read_parquet(p, columns=['FINAL_CPT','SERVICEDATE','LABEL_V6_PAX','LINE_AUTHORIZATION_NUMBER','CARC','RARC','LEVEL1_LABEL'],
+                    filesystem=f.S3FileSystem())
+dt = pd.to_datetime(d.SERVICEDATE, errors='coerce')
+d = d[(dt >= '2026-05-01') & (dt < '2026-08-01') & ~d.FINAL_CPT.astype(str).str.fullmatch(r'\d{4}F')]
+pa = d[d.LABEL_V6_PAX.astype(str).str.upper().eq('TRUE')]
+txt = ~pa.LINE_AUTHORIZATION_NUMBER.astype(str).str.strip().str.upper().isin(['', 'NAN', 'NONE', 'NULL'])
+print(f"test-window PA lines {len(pa):,} | with auth text {txt.mean():.1%} | without auth text {(~txt).sum():,}")
+for c in ['CARC', 'RARC', 'LEVEL1_LABEL']:
+    print(f"\n-- {c} on PA lines WITHOUT auth text"); print(pa[~txt][c].astype(str).value_counts().head(12).to_string())
+print("\n-- LEVEL1_LABEL on all PA lines"); print(pa.LEVEL1_LABEL.astype(str).value_counts().head(10).to_string())
+EOF
 
-What we built
 
-The rule: never relabel a CPT at a payer if that payer has at least one PA line for that CPT billed alone. Protected pairs are found on training data only (before May 2026).
-5,719 CPT + payer pairs are protected.
-Passengers: 23,531 in v8 → 11,861 in v9. 11,670 lines are back to PA.
-PA lines: 526,292 (no passenger fix) → 502,761 (v8) → 514,431 (v9).
-The build only undoes v8 flips; nothing new was flipped. Count checks passed for every year.
-
-Results (seed 42; seed 7 in brackets where we ran it)
-
-Answer key	No passenger fix	v8 passenger	v9 option C
-Original labels	0.653 / 52,356	0.652 / 55,920	0.650 / 55,706
-v8 passenger labels	0.666 / 41,415	0.675 / 36,676	0.669 / 39,891
-Option C labels	0.658 / 48,180	0.662 / 45,605 (0.663 / 44,326)	0.661 / 47,271 (0.660 / 45,227)
-Services where all labels agree	0.668 / 40,880	0.675 / 36,633	0.670 / 39,644 (s7: 38,621)
-
-What it shows
-
-The v8 model beats the option C model even when scored on option C’s own labels: about 1,700 fewer false alarms (seed 42) and about 900 fewer (seed 7).
-On services where every label definition agrees (the fairest comparison), v8 has 36,633 false alarms vs 39,644 for option C. That is about 3,000 (8%) more for option C.
-Real PA caught above the cut-off: v8 86.0%, option C 85.1%, no fix 84.1%.
-The 11,670 kept lines:
-The option C model ranks only 21.9% of them above the cut-off, even though it was trained on them as PA. The model with no fix ranks 20.0% above it, and v8 2.1%.
-So training on them as PA catches very few of them, and it adds noise that costs precision on everything else.
-Inference: with our 5 features these lines look the same as the non-PA lines of the same CPT, so the model can’t separate them.
+python - <<'EOF'
+import pandas as pd, json
+t = pd.read_csv('full_review_core/4_fn_top_PAYOR_CLEAN.csv')
+print(t.head(12).to_string(index=False))
+odd = t[(t.pa_caught == 0) & (t.FN > 50)].PAYOR_CLEAN.tolist()
+cats = json.load(open('exp_feat_core_s42/models/lgb_ctx_full_categories.json'))
+p = pd.read_parquet('exp_feat_core_s42/test_preds.parquet', columns=['PAYOR_CLEAN','PAYOR_PLAN_CLEAN','y'])
+for name in odd:
+    print(f"\n== {name} | payer seen in training: {name in set(cats['PAYOR_CLEAN'])}")
+    s = p[p.PAYOR_CLEAN == name].groupby('PAYOR_PLAN_CLEAN').y.agg(lines='size', pa_rate='mean')
+    s['plan_seen_in_training'] = s.index.isin(set(cats['PAYOR_PLAN_CLEAN']))
+    print(s.sort_values('lines', ascending=False).head(10).round(3).to_string())
+EOF
