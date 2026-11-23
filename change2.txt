@@ -1,14 +1,3 @@
-Q1: add under Delivery Excellence (after the evaluation framework bullet):
-
-Designed a way to update the model quickly, without full retraining. Payer PA rules change during the year, and retraining the full model each time is slow and needs re-validation. I built a cell-weight layer on top of a frozen LightGBM model:
-How it works: for each CPT + plan combination (and a finer CPT + modifier + place of service + plan level), it learns a correction from the latest three months of data. The correction is the gap between the observed and predicted PA rate. Cells with little data are shrunk towards zero so they don’t swing on a few lines.
-Isolation: a weight changes only its own cell, and the rest of the model stays exactly the same. I proved this with an isolation test that edited 5 cells and saw zero change everywhere else. This makes every update targeted and auditable.
-Known rule changes: when a payer announces a change, the cell can be set directly (e.g. to “PA required”) from day one, before any claims arrive.
-Results:
-On real recent data, learned weights closed [X%] of the gap between the frozen model and a full retrain.
-In a simulation where cells were made to newly need PA, or stop needing it, [manual / learned] weights correctly re-scored [X%] of the changed lines, with no change to any other cell.
-Built a base + adapter design so new features (e.g. payer rules coverage, diagnosis) can be added as a small model on top of the frozen base. That way the effect of a new feature can be measured, and turned off, without touching the base model.
-
-Q3: add to the Production readiness bullet:
-
-…and move the cell-weight update into production as the routine way to absorb payer rule changes between full retrains. Set the process for who approves a manual cell change, and how it is logged and reviewed.
+rm -rf exp_feat_100_s42 logs_feats/exp_feat_100_s42.log
+nohup bash run_feats.sh 0 > run_feats_dx.log 2>&1 &
+tail -f run_feats_dx.log
