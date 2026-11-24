@@ -1,2 +1,5 @@
-python confusion_v9.py base=exp_v8d_grp_s42 l6pax=exp_v8d_l6pax_s42 l6paxc=exp_v9d_l6paxc_s42 --base base --out v9d_confusion_s42.csv
-python confusion_v9.py base=exp_exclude_s7 l6pax=exp_v8d_l6pax_s7 l6paxc=exp_v9d_l6paxc_s7 --base base --out v9d_confusion_s7.csv
+nohup bash -c "SEED=7 bash run_feats.sh 6; TRAIN_YEARS='2025 2026' bash run_feats.sh 6" > run_next.log 2>&1 &
+
+
+bash run_feats.sh score > /dev/null
+python -c "import pandas as pd; d=pd.read_csv('feats_confusion.csv'); print(d[(d['answer key']=='agreed')&(d['target recall']=='85%')].to_string(index=False))"
