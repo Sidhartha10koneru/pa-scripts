@@ -1,0 +1,1 @@
+python -c "import pyarrow.parquet as pq, pyarrow.fs as f; s=pq.read_schema('cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v11_hist_draft/ai_prior_auth_09282026_v3_2026_std.parquet', filesystem=f.S3FileSystem()); print(len(s.names), [c for c in s.names if c.startswith('PAH')])"
