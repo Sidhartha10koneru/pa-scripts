@@ -34,11 +34,12 @@ from sklearn.metrics import roc_auc_score
 
 DATA = "s3://cli-ml-data-prod/datalake/ai-prior-auth/09282026/std_data_v8_draft/ai_prior_auth_09282026_v3_2026_std.parquet"
 EXCLUDE = {
-    "identifier / personal": r"PAT_?ID|PATIENT|MRN|SSN|NAME(?!.*(PAYOR|PLAN))|DOB|BIRTH|ADDR|PHONE|EMAIL|ZIP|POSTAL|MEMBER|SUBSCRIB|GUARANT|"
+    "identifier / personal": r"PAT_?ID|PATIENT|MRN|SSN|(?<!PAYOR_)(?<!PLAN_)NAME|PAT_.*NAME|PCPNAME|PROVIDER_NAME|DOB|BIRTH|ADDR|PHONE|EMAIL|ZIP|POSTAL|MEMBER|SUBSCRIB|GUARANT|"
                              r"^PID|^PD1|^NK1|^GT1|^IN1|^IN2|^IN3|_PID_|_NK1_|_GT1_|_IN1_|_IN2_|_IN3_|^CSN$|SRC_ROW|SRC_YEAR",
     "protected attribute": r"RACE|ETHNIC|SEX|GENDER|RELIGION|MARITAL|LANGUAGE",
     "known after service": r"AUTH|LABEL|CARC|RARC|DENIAL|DENY|PAID|PAYMENT|ADJUST|ADJ_|REMIT|835|STATUS|ACUITY|RELABEL|PASSENGER|"
-                           r"VISIT_LEVEL|REASON|ALLOWED|BALANCE|WRITE_?OFF|RECOUP|APPEAL|EOB|CHECK_|GROUP_LABEL|_CODES?$",
+                           r"VISIT_LEVEL|REASON|ALLOWED|BALANCE|WRITE_?OFF|RECOUP|APPEAL|EOB|CHECK_|GROUP_LABEL|_CODES?$|"
+                           r"^N_TRUE$|^N_FALSE$|^N_AMBIGUOUS$|^GROUP_SIZE$|^GROUP_GUID$|INVOICE|SUBMISSION",
 }
 PRINT_VALUES_MAX = 40
 
@@ -53,7 +54,12 @@ def is_em(cpt):
     return n.between(99202, 99499)
 
 
+ALLOW = {"DX_NAME", "ENCOUNTER_DEPARTMENT_NAME", "BUCKET_PAYOR_NAME"}      # descriptions, not people
+
+
 def excluded(col):
+    if col.upper() in ALLOW:
+        return None
     for why, pat in EXCLUDE.items():
         if re.search(pat, col.upper()):
             return why
@@ -151,14 +157,15 @@ def main():
             nun = k[filled].nunique()
             if c in feats_model or k.nunique() <= 1:          # model features are already listed; constant columns say nothing
                 continue
-            if num.notna().mean() > 0.95 * filled.mean() and nun > 20:
+            is_id = bool(re.search(r"_ID$|NPI|GUID|^ID_|_NUM$|NUMBER$", c.upper()))   # codes, not quantities
+            if not is_id and num.notna().mean() > 0.95 * filled.mean() and nun > 20:
                 au = roc_auc_score(y, num.fillna(num.median()))
                 kind, auc, d = "numeric", max(au, 1 - au), ("higher = TP" if au >= .5 else "lower = TP")
             else:
                 kind, auc, d = "categorical", cat_auc(v, y), ""
             res.append({"column": c, "kind": kind, "AUC": auc, "direction": d, "n_values": int(nun),
                         "fill_TP": float(filled[y == 1].mean()), "fill_FP": float(filled[y == 0].mean()), "source": "data file"})
-            if nun <= PRINT_VALUES_MAX or kind == "numeric":
+            if nun <= PRINT_VALUES_MAX or kind == "numeric" or (is_id and nun <= 400):
                 values[c] = v
         print(f"  scanned {min(i + 20, len(keep))}/{len(keep)} columns")
 
@@ -173,10 +180,10 @@ def main():
     print("\n== 2. value detail for the top separating columns (low-cardinality or numeric only)")
     shown = 0
     for c in R[R.source.isin(["data file", "derived"])].column:
-        if c not in values or shown >= 8:
+        if c not in values or shown >= 10:
             continue
         v = values[c]
-        if pd.api.types.is_numeric_dtype(v) and v.nunique() > PRINT_VALUES_MAX:
+        if pd.api.types.is_numeric_dtype(v) and v.nunique() > PRINT_VALUES_MAX and not re.search(r"_ID$|NPI|GUID", c.upper()):
             b = pd.qcut(v.rank(method="first"), 5, labels=[f"q{i}" for i in range(1, 6)])
             g = pd.DataFrame({"bin": b, "v": v, "y": y}).groupby("bin", observed=True).agg(lo=("v", "min"), hi=("v", "max"), TP=("y", "sum"), n=("y", "size"))
         else:
@@ -193,7 +200,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-nohup python -u em_scan.py --run exp_feat_core_s42 --out em_scan_core > run_em_scan.log 2>&1 &
-tail -f run_em_scan.log
