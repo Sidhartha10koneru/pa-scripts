@@ -1,8 +1,9 @@
 """
 em_why.py - WHICH feature pushes E/M false alarms above the cut-off?  (LightGBM per-feature contributions)
 
-Uses the saved model (<run>/models/<model>.txt + <model>_categories.json), rebuilds the feature rows of the test E/M
-lines from the data file, and checks the rebuilt scores against <run>/test_preds.parquet before trusting anything.
+Uses the saved model (<run>/models/<model>.txt + <model>_categories.json). Feature rows come from test_preds.parquet
+(the pipeline's own cleaned columns) plus the raw extra columns it lacks from the data file; categories are applied
+with pa_base_adapter.apply_categories (same as training). Rebuilt scores are checked against the saved scores before anything is reported.
 For each E/M service the line with the highest score is used (service score = max over lines, as everywhere else).
 
   0_score_check        rebuilt score vs saved score (must match, else stop and fix the feature rebuild)
@@ -125,29 +126,58 @@ def main():
     E = pd.concat([E[E.cm != "TN"], tn.sample(min(a.tn_sample, len(tn)), random_state=0)])
     print(f"score column {pcol} | cut-off {cut:.6f} | E/M services used: " + ", ".join(f"{k} {v:,}" for k, v in E.cm.value_counts().items()))
 
-    # rebuild feature rows for those services' lines
-    import pyarrow.parquet as pq
+    # feature rows: start from test_preds itself (it carries the pipeline's own cleaned CPT, MOD, POS, PAYOR_CLEAN,
+    # PAYOR_PLAN_CLEAN, Primary_DX, DX3 per line); only columns it lacks (SPECIALTY, DEPARTMENT_ID, VISITTYPE, NPI ...)
+    # come from the data file, raw, exactly as pa_experiments loads --extra-feats
+    d = t.merge(E[["k_csn", "k_cpt", "cm", "s"]], on=["k_csn", "k_cpt"])
+    from_file = [f for f in feats if f not in d.columns]
     fs0, p0 = (pafs.S3FileSystem(), a.data.replace("s3://", "")) if a.data.startswith("s3://") else (pafs.LocalFileSystem(), os.path.abspath(a.data))
     have = set(ds.dataset(p0, filesystem=fs0, format="parquet").schema.names)
-    derive = [f for f in feats if f not in have]
+    direct = [f for f in from_file if f in have]
+    derive = [f for f in from_file if f not in have]
     raw = [c for c in ["PAYOR", "PLAN", "Primary_DX"] if c in have] if derive else []
-    d = read(a.data, list(dict.fromkeys(["CSN", "FINAL_CPT"] + [f for f in feats if f in have] + raw)))
-    d["k_csn"], d["k_cpt"] = key(d.CSN), key(d.FINAL_CPT).str.upper()
-    for f in derive:                                      # built inside pa_experiments: try known recipes, keep the best match
+    print(f"features from test_preds: {[f for f in feats if f not in from_file]} | from data file: {direct} | rebuilt: {derive}")
+    if direct or raw:
+        f2 = read(a.data, list(dict.fromkeys(["CSN", "FINAL_CPT"] + direct + raw)))
+        f2["k_csn"], f2["k_cpt"] = key(f2.CSN), key(f2.FINAL_CPT).str.upper()
+        joined = False
+        if "SRC_ROW" in d:                                # exact line: SRC_ROW = row number in the source year file
+            rows = pd.to_numeric(d.SRC_ROW, errors="coerce")
+            if "SRC_YEAR" in d:
+                yr = pd.to_numeric(d.SRC_YEAR, errors="coerce")
+                rows = rows.where(yr == yr.mode().iloc[0]) if yr.nunique() > 1 else rows
+            for off in (0, -1):
+                r = (rows + off).where((rows + off).between(0, len(f2) - 1))
+                ok = r.notna()
+                m = pd.Series(False, index=d.index)
+                m[ok] = f2.k_csn.values[r[ok].astype(int)] == d.k_csn[ok].values
+                if m.mean() > 0.99:
+                    for c in direct + raw:
+                        d[c] = f2[c].values[r.fillna(0).astype(int)]
+                    print(f"joined data-file columns by SRC_ROW (offset {off}): {m.mean():.1%} of lines match on CSN")
+                    joined = True
+                    break
+        if not joined:                                    # fallback: first line of the same CSN + CPT
+            print("joined data-file columns by CSN + CPT (first line) - SRC_ROW not usable")
+            g = f2[f2.k_csn.isin(set(E.k_csn))].drop(columns=["CSN", "FINAL_CPT"]).drop_duplicates(["k_csn", "k_cpt"])
+            d = d.drop(columns=[c for c in direct + raw if c in d]).merge(g, on=["k_csn", "k_cpt"], how="left")
+    for f in derive:                                      # last resort: try known recipes, keep the best match
         if f not in DERIVE or f not in cats:
-            raise SystemExit(f"model feature {f} is not in the data file and has no recipe - send: grep -n '{f}' pa_experiments.py")
+            raise SystemExit(f"model feature {f} has no source - send: grep -n '{f}' pa_base_adapter.py")
         best = max(((name, fn(d)) for name, fn in DERIVE[f].items()), key=lambda r: to_model_cats(r[1], cats[f])[1])
         d[f] = best[1]
-        print(f"built {f} with recipe '{best[0]}': known {to_model_cats(d[f], cats[f])[1]:.1%} | model categories e.g. {list(cats[f])[:4]}")
-    d = d.merge(E[["k_csn", "k_cpt", "cm", "s"]], on=["k_csn", "k_cpt"])
-    X = pd.DataFrame(index=d.index)
-    known = {}
-    for f in feats:
-        if f in cats:
-            X[f], known[f] = to_model_cats(d[f], cats[f])
-        else:
-            X[f] = pd.to_numeric(d[f], errors="coerce")
-            known[f] = float(X[f].notna().mean())
+        print(f"built {f} with recipe '{best[0]}'")
+    known = {f: (to_model_cats(d[f], cats[f])[1] if f in cats else float(pd.to_numeric(d[f], errors='coerce').notna().mean())) for f in feats}
+    try:                                                  # the pipeline's own category mapping = exactly what training used
+        import pa_base_adapter as pb
+        X = pb.apply_categories(d, cats, feats)
+        print("categories applied with pa_base_adapter.apply_categories")
+    except Exception as ex:
+        print(f"pa_base_adapter.apply_categories not usable ({type(ex).__name__}: {ex}) - using string matching")
+        X = pd.DataFrame(index=d.index)
+        for f in feats:
+            X[f] = to_model_cats(d[f], cats[f])[0] if f in cats else pd.to_numeric(d[f], errors="coerce")
+    X = X[feats]
     d["s_rebuilt"] = bst.predict(X)
     C = pd.DataFrame(bst.predict(X, pred_contrib=True), columns=feats + ["base"], index=d.index)
 
