@@ -1,0 +1,13 @@
+Family	Codes	Examples
+E/M visits	99202–99499	99213, 99214 office visits
+Anesthesia	00100–01999	
+Surgery	10004–69990	20610 joint injection, 36415 blood draw
+Imaging / radiology	70010–79999	71250 CT chest, 70450 CT head
+Lab	80047–89398	85025 blood count
+Infusion / injection admin	96360–96549	96365 IV infusion, 96413 chemo admin
+Therapy (PT/OT)	97010–97799	97110 exercise, 97140 manual therapy
+Cardiovascular	92920–93799	93306 echo, 93000 ECG
+Other medicine	90281–99199, not covered above	vaccines, psychiatry, sleep studies
+Drugs (J codes)	HCPCS starting with J	J9271 (an oncology drug)
+Other HCPCS	by first letter: Q contrast/misc., G procedures, A supplies, E equipment, L orthotics	Q9967 contrast
+Category III	codes ending in T	emerging procedures
