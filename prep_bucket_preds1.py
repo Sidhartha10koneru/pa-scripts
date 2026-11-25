@@ -46,6 +46,9 @@ def main():
 
     fs = None if os.path.exists(a.data) else pafs.S3FileSystem()
     d = pd.read_parquet(a.data, columns=list(RAW), filesystem=fs).rename(columns=RAW)
+    for c in d.columns:                                   # file stores some columns as category -> plain values (clean_names can't fillna a category)
+        if isinstance(d[c].dtype, pd.CategoricalDtype):
+            d[c] = d[c].astype(object)
     d["k_csn"] = d.csn.astype(str).str.replace(r"\.0$", "", regex=True)
     d["k_cpt"] = d.cpt.astype(str).str.strip().str.upper()
     d = d.merge(S[["k_csn", "k_cpt", "pa_label"]], on=["k_csn", "k_cpt"])        # only our radiology test services
