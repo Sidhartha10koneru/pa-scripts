@@ -59,7 +59,37 @@ def to_model_cats(x, cats):
     k = key(x)
     v = k.map(look)
     v = v.where(v.notna(), k.str.upper().map(up))
+    for tok in ["MISSING", "UNKNOWN", "NAN", "NONE", "NULL"]:
+        if tok in up:
+            v = v.where(v.notna() | k.ne(""), up[tok])
+            break
     return pd.Categorical(v, categories=cats), float(v.notna().mean())
+
+
+def _up(s):
+    return key(s).str.upper().str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def _asof(s):
+    return _up(s).str.replace(r"\bAS OF\b.*$", "", regex=True).str.strip()
+
+
+def _words(s):
+    return _asof(s).str.replace(r"[^\w\s]", " ", regex=True)
+
+
+def _words1(s):
+    return _words(s).str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+CLEANS = {"upper": _up, "asof": _asof, "punct": _words, "punct_1space": _words1}
+SEPS = {"pipe_spaced": " | ", "pipe": "|", "dash": " - ", "underscore": "_", "space": " "}
+DERIVE = {
+    "PAYOR_CLEAN": {c: (lambda d, f=f: f(d.PAYOR)) for c, f in CLEANS.items()},
+    "PAYOR_PLAN_CLEAN": {f"{c}+{sn}": (lambda d, f=f, sp=sp: f(d.PAYOR) + sp + f(d.PLAN)) for c, f in CLEANS.items() for sn, sp in SEPS.items()},
+    "DX3": {"nodot3": lambda d: _up(d.Primary_DX).str.replace(".", "", regex=False).str[:3],
+            "raw3": lambda d: _up(d.Primary_DX).str[:3]},
+}
 
 
 def main():
@@ -96,8 +126,19 @@ def main():
     print(f"score column {pcol} | cut-off {cut:.6f} | E/M services used: " + ", ".join(f"{k} {v:,}" for k, v in E.cm.value_counts().items()))
 
     # rebuild feature rows for those services' lines
-    d = read(a.data, list(dict.fromkeys(["CSN", "FINAL_CPT"] + feats)))
+    import pyarrow.parquet as pq
+    fs0, p0 = (pafs.S3FileSystem(), a.data.replace("s3://", "")) if a.data.startswith("s3://") else (pafs.LocalFileSystem(), os.path.abspath(a.data))
+    have = set(ds.dataset(p0, filesystem=fs0, format="parquet").schema.names)
+    derive = [f for f in feats if f not in have]
+    raw = [c for c in ["PAYOR", "PLAN", "Primary_DX"] if c in have] if derive else []
+    d = read(a.data, list(dict.fromkeys(["CSN", "FINAL_CPT"] + [f for f in feats if f in have] + raw)))
     d["k_csn"], d["k_cpt"] = key(d.CSN), key(d.FINAL_CPT).str.upper()
+    for f in derive:                                      # built inside pa_experiments: try known recipes, keep the best match
+        if f not in DERIVE or f not in cats:
+            raise SystemExit(f"model feature {f} is not in the data file and has no recipe - send: grep -n '{f}' pa_experiments.py")
+        best = max(((name, fn(d)) for name, fn in DERIVE[f].items()), key=lambda r: to_model_cats(r[1], cats[f])[1])
+        d[f] = best[1]
+        print(f"built {f} with recipe '{best[0]}': known {to_model_cats(d[f], cats[f])[1]:.1%} | model categories e.g. {list(cats[f])[:4]}")
     d = d.merge(E[["k_csn", "k_cpt", "cm", "s"]], on=["k_csn", "k_cpt"])
     X = pd.DataFrame(index=d.index)
     known = {}
@@ -151,7 +192,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-nohup python -u em_why.py --run exp_feat_core_s42 --out em_why_core > run_em_why.log 2>&1 &
-tail -f run_em_why.log
