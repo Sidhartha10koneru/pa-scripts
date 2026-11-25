@@ -3,7 +3,8 @@ referral_check.py - how much of our error is tied to referrals? (sizing for the 
 
 Flags each test service (CSN + CPT) that has referral evidence on any of its lines:
   REF_TEXT  auth-number text looks like a referral (RFRL / REFERRAL / REFRL / REF ...), incl. "RFRL REQD"
-  REF_288   CARC 288 ("referral absent") in any code column
+  REF_CODE  referral denial code 165 / 243 (Acuity list) in ACUITY_AUTH_CODES
+  VLA       VISIT_LEVEL_AUTH = 1 (TRUE via a shared auth number with no owner line - kept TRUE pending the referral decision)
 Then, at the cut-off for --recall on ALL test services (model not retrained), reports:
   0  TP / FP / FN / TN for all services and E/M, split by referral evidence
   1  Scenario "exclude referral services" - drop every flagged service (TP, FP, FN, TN alike), same cut-off and re-tuned cut-off
@@ -12,7 +13,6 @@ These are WHAT-IFs on a fixed model: a sizing, not a retrained result.
 Raw auth text is never printed. Output = counts only.
 
   python referral_check.py --run exp_feat_core_s42 --out referral_core.csv
-  (if code columns aren't auto-found:  --code-cols COL1 COL2 ;  auth column: --auth-col NAME)
 """
 import argparse
 import os
@@ -28,7 +28,7 @@ REF_RE = r"\bRFRL\b|REFERR|REFRL|\bREF\b|\bRFL\b|REFERAL"
 
 
 def key(s):
-    return s.astype(object).astype(str).str.replace(r"\.0$", "", regex=True).str.strip().str.upper()
+    return s.astype(object).fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip().str.upper()
 
 
 def cm_counts(y, s, cut):
@@ -46,7 +46,8 @@ def main():
     ap.add_argument("--data", default=PATH)
     ap.add_argument("--recall", type=float, default=0.85)
     ap.add_argument("--auth-col", default="LINE_AUTHORIZATION_NUMBER")
-    ap.add_argument("--code-cols", nargs="*", default=None)
+    ap.add_argument("--code-col", default="ACUITY_AUTH_CODES")
+    ap.add_argument("--ref-codes", nargs="+", default=["165", "243"])
     a = ap.parse_args()
 
     # our test services
@@ -62,19 +63,22 @@ def main():
     fs = None if os.path.exists(a.data) else pafs.S3FileSystem()
     import pyarrow.parquet as pq
     cols = pq.ParquetFile(fs.open_input_file(a.data) if fs else a.data).schema_arrow.names
-    code_cols = a.code_cols if a.code_cols else [c for c in cols if any(k in c.upper() for k in ("CARC", "RARC", "REASON_CODE", "ADJ_REASON"))]
-    print(f"auth column: {a.auth_col if a.auth_col in cols else 'NOT FOUND'} | code columns: {code_cols or 'NONE FOUND'}")
-    use = ["CSN", "FINAL_CPT"] + ([a.auth_col] if a.auth_col in cols else []) + code_cols
+    has = {c: c in cols for c in [a.auth_col, a.code_col, "VISIT_LEVEL_AUTH"]}
+    print("columns found: " + " | ".join(f"{c} {'yes' if v else 'NO'}" for c, v in has.items()))
+    use = ["CSN", "FINAL_CPT"] + [c for c, v in has.items() if v]
     d = pd.read_parquet(a.data, columns=use, filesystem=fs)
     d["k_csn"], d["k_cpt"] = key(d.CSN), key(d.FINAL_CPT)
     d = d[d.k_csn.isin(set(S.k_csn))]
     d["REF_TEXT"] = key(d[a.auth_col]).str.contains(REF_RE, regex=True) if a.auth_col in d else False
-    d["REF_288"] = False
-    for c in code_cols:
-        d["REF_288"] |= key(d[c]).str.contains(r"(?<!\d)288(?!\d)", regex=True)
-    ev = d.groupby(["k_csn", "k_cpt"])[["REF_TEXT", "REF_288"]].max().reset_index()
-    S = S.merge(ev, on=["k_csn", "k_cpt"], how="left").fillna({"REF_TEXT": False, "REF_288": False})
-    S["REF"] = S.REF_TEXT.astype(bool) | S.REF_288.astype(bool)
+    codes = set(a.ref_codes)
+    d["REF_CODE"] = (key(d[a.code_col]).str.replace(" ", "").str.split(",").map(lambda l: bool(codes & set(l)))
+                     if a.code_col in d else False)
+    d["VLA"] = pd.to_numeric(d.VISIT_LEVEL_AUTH, errors="coerce").fillna(0).eq(1) if "VISIT_LEVEL_AUTH" in d else False
+    F = ["REF_TEXT", "REF_CODE", "VLA"]
+    ev = d.groupby(["k_csn", "k_cpt"])[F].max().reset_index()
+    S = S.merge(ev, on=["k_csn", "k_cpt"], how="left")
+    S[F] = S[F].fillna(False).astype(bool)
+    S["REF"] = S[F].any(axis=1)
 
     cut = float(np.quantile(S.s[S.y], 1 - a.recall))
     S["cm"] = np.select([S.y & (S.s >= cut), ~S.y & (S.s >= cut), S.y], ["TP", "FP", "FN"], "TN")
@@ -84,7 +88,7 @@ def main():
     for scope, m in [("all", S.index == S.index), ("E/M", S.fam == "EM")]:
         x = S[m]
         rows.append(dict(table="0_current", scope=scope, **cm_counts(x.y, x.s, cut)))
-        for ev_col in ["REF", "REF_TEXT", "REF_288"]:
+        for ev_col in ["REF"] + F:
             c = x[x[ev_col]].cm.value_counts()
             rows.append(dict(table="0_with_evidence", scope=f"{scope} | {ev_col}",
                              **{k: int(c.get(k, 0)) for k in ["TP", "FP", "FN", "TN"]}, services=int(x[ev_col].sum())))
