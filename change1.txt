@@ -1,7 +1,24 @@
-python -c "import json; print(json.load(open('exp_v8d_l6pax_s42/split_info.json')).get('command', 'NO COMMAND - will rebuild'))"
+import pandas as pd, numpy as np
+from build_pa_history import family
 
-nohup bash run_feats.sh 0 > run_feats_dx.log 2>&1 &
-tail -f run_feats_dx.log
+def svc(run):
+    t = pd.read_parquet(f"{run}/test_preds.parquet"); p = [c for c in t if c.startswith("p_")][0]
+    t["cpt"] = t.FINAL_CPT.astype(str).str.strip().str.upper()
+    t["prim"] = t.FILING_ORDER_C.astype(str).isin(["1", "1.0"])
+    S = t.groupby(["CSN", "cpt"]).agg(y=("y", "max"), s_all=(p, "max"), has=("prim", "max"),
+                                      plan=("PAYOR_PLAN_CLEAN", "first")).reset_index()
+    S = S.join(t[t.prim].groupby(["CSN", "cpt"])[p].max().rename("s_p"), on=["CSN", "cpt"])
+    S["s"] = S.s_p.where(S.has, S.s_all); cut = np.quantile(S.s[S.y == 1], 0.15)
+    S["cm"] = np.select([(S.y == 1) & (S.s >= cut), (S.y == 0) & (S.s >= cut), S.y == 1], ["TP", "FP", "FN"], "TN")
+    S["fam"] = S.cpt.map(family)
+    print(f"\n== {run} | cut {cut:.4f} | TP {(S.cm == 'TP').sum():,} FP {(S.cm == 'FP').sum():,}")
+    return S
 
-bash run_feats.sh score
-
+for run in ["exp_feat_core_s42", "exp_feat_hist_s42"]:
+    S = svc(run)
+    f = pd.crosstab(S.fam, S.cm).reindex(columns=["TP", "FP", "FN"], fill_value=0)
+    f["precision"] = (f.TP / (f.TP + f.FP)).round(3); f["FP_share"] = (f.FP / f.FP.sum()).round(3)
+    print(f.sort_values("FP", ascending=False).to_string())
+    fp = S[S.cm == "FP"]
+    print("\ntop CPTs by FP:\n", fp.cpt.value_counts().head(15).to_string())
+    print("\ntop plans by FP:\n", fp.plan.value_counts().head(10).to_string())
