@@ -1,0 +1,15 @@
+Remaining false alarms by family (85% recall, primary-line scoring, all test services)
+
+Family	Core FP	Core precision	History FP	History precision	Share of history FP
+E/M visits	8,731	11.2%	3,868	23.7%	22.6%
+Imaging	3,847	72.8%	3,259	75.7%	19.0%
+Surgery	2,863	49.9%	1,965	57.5%	11.5%
+Cardio	2,117	41.9%	1,719	46.1%	10.0%
+Drugs (J codes)	2,120	77.6%	1,469	83.5%	8.6%
+Infusion	2,251	74.1%	1,416	82.0%	8.3%
+Therapy	2,333	68.4%	1,225	81.1%	7.2%
+Other medicine	1,323	33.8%	692	48.7%	4.0%
+HCPCS A	677	78.4%	581	80.7%	3.4%
+Lab	751	22.3%	507	32.2%	3.0%
+HCPCS Q	490	82.5%	393	85.3%	2.3%
+Total	27,594	59.4%	17,132	70.2%	
