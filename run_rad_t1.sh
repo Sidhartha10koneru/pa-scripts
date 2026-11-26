@@ -44,3 +44,11 @@ for L in $LABELS; do
   grep -E "CPT range|TRAIN |UPDATE |TEST |trees|AP_svc" "logs_rad/$OUT.log" | tail -8
 done
 echo "done $(date '+%F %T')"
+
+
+EXTRA_ARGS="--es-metric average_precision --val-start 2026-01-01 --refit-full" RUN_TAG=esap \
+  nohup bash run_rad.sh > run_rad_esap.log 2>&1 &
+
+
+python rad_score.py core=exp_feat_core_s42 rad_v6pax=exp_rad_v6_pax_s42 rad_v7strict=exp_rad_v7_strict_s42 \
+  rad_v6pax_esap=exp_rad_v6_pax_esap_s42 rad_v7strict_esap=exp_rad_v7_strict_esap_s42 --out rad_scores.csv
