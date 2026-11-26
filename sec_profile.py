@@ -176,3 +176,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+nohup python -u sec_profile.py --out sec_profile_imag --family IMAG > run_sec_profile.log 2>&1 &     # radiology
+nohup python -u sec_profile.py --out sec_profile_all > run_sec_profile_all.log 2>&1 &                # all families
